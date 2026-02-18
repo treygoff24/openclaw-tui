@@ -23,6 +23,75 @@ def _parse_tree_node(raw: dict) -> TreeNodeData:
     )
 
 
+def _extract_error_text(data: object) -> str | None:
+    """Best-effort extraction of human-readable error text from gateway JSON."""
+    if not isinstance(data, dict):
+        return None
+
+    candidates: list[object] = [
+        data.get("error"),
+        data.get("message"),
+        data.get("detail"),
+    ]
+
+    result = data.get("result")
+    if isinstance(result, dict):
+        candidates.extend([
+            result.get("error"),
+            result.get("message"),
+            result.get("detail"),
+        ])
+        details = result.get("details")
+        if isinstance(details, dict):
+            candidates.extend([
+                details.get("error"),
+                details.get("message"),
+                details.get("detail"),
+            ])
+
+    for item in candidates:
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+        if isinstance(item, dict):
+            for key in ("message", "error", "detail"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return None
+
+
+def _extract_history_messages(data: object) -> list[dict]:
+    """Extract a messages list from known gateway response shapes."""
+    if not isinstance(data, dict):
+        raise ValueError("Response body is not an object")
+
+    containers: list[dict] = []
+
+    def add_if_dict(value: object) -> None:
+        if isinstance(value, dict):
+            containers.append(value)
+
+    add_if_dict(data)
+    result = data.get("result")
+    add_if_dict(result)
+
+    details = result.get("details") if isinstance(result, dict) else None
+    add_if_dict(details)
+
+    for parent in tuple(containers):
+        add_if_dict(parent.get("data"))
+        add_if_dict(parent.get("output"))
+        add_if_dict(parent.get("result"))
+
+    for container in containers:
+        for key in ("messages", "history", "items", "events"):
+            value = container.get(key)
+            if isinstance(value, list):
+                return value
+
+    raise ValueError("No messages list found in gateway response")
+
+
 class GatewayError(Exception):
     """Base error for gateway communication."""
     pass
@@ -37,6 +106,12 @@ class GatewayClient:
     def __init__(self, config: GatewayConfig) -> None:
         self.config = config
         self._client: httpx.Client | None = None
+        self._last_history_error: str | None = None
+
+    @property
+    def last_history_error(self) -> str | None:
+        """Return last fetch_history error message, if any."""
+        return self._last_history_error
 
     def _get_client(self) -> httpx.Client:
         """Get or create reusable HTTP client."""
@@ -197,35 +272,76 @@ class GatewayClient:
         {"tool": "sessions_history", "input": {"sessionKey": key, "limit": limit}}
 
         Returns empty list on any error (connection, auth, parse).
+        Sets ``last_history_error`` with details when available.
         Never raises.
         """
         client = self._get_client()
-        payload = {
-            "tool": "sessions_history",
-            "input": {"sessionKey": session_key, "limit": limit},
-        }
+        self._last_history_error = None
 
-        try:
-            response = client.post("/tools/invoke", json=payload)
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
-            logger.warning("fetch_history connection failed: %s", exc)
-            return []
+        payloads = [
+            {"tool": "sessions_history", "input": {"sessionKey": session_key, "limit": limit}},
+            {"tool": "sessions_history", "input": {"session_key": session_key, "limit": limit}},
+        ]
 
-        if response.status_code in (401, 403):
-            logger.warning("fetch_history auth failed: HTTP %d", response.status_code)
-            return []
+        errors: list[str] = []
+        for index, payload in enumerate(payloads):
+            try:
+                response = client.post("/tools/invoke", json=payload)
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
+                detail = f"Cannot reach gateway at {self.config.base_url}: {exc}"
+                logger.warning("fetch_history connection failed: %s", exc)
+                self._last_history_error = detail
+                return []
 
-        if response.status_code != 200:
-            return []
+            if response.status_code in (401, 403):
+                detail = f"Authentication failed: HTTP {response.status_code}"
+                logger.warning("fetch_history auth failed: HTTP %d", response.status_code)
+                self._last_history_error = detail
+                return []
 
-        try:
-            data = response.json()
-            messages = data["result"]["details"]["messages"]
-        except (KeyError, TypeError, ValueError) as exc:
-            logger.warning("fetch_history unexpected response shape: %s", exc)
-            return []
+            data: object = None
+            try:
+                data = response.json()
+            except ValueError:
+                data = None
 
-        return messages
+            if response.status_code != 200:
+                message = _extract_error_text(data)
+                detail = f"Gateway returned HTTP {response.status_code}"
+                if message:
+                    detail = f"{detail}: {message}"
+                errors.append(detail)
+                # Retry once with snake_case for possible schema mismatch.
+                if index == 0 and response.status_code in (400, 422):
+                    continue
+                self._last_history_error = "; ".join(errors)
+                return []
+
+            try:
+                messages = _extract_history_messages(data)
+            except ValueError as exc:
+                message = _extract_error_text(data)
+                detail = message or str(exc)
+                logger.warning("fetch_history unexpected response shape: %s", detail)
+                errors.append(detail)
+                # Retry once with snake_case in case first payload field is invalid.
+                if index == 0:
+                    continue
+                self._last_history_error = "; ".join(errors)
+                return []
+
+            if not isinstance(messages, list):
+                errors.append("Invalid messages payload from gateway")
+                if index == 0:
+                    continue
+                self._last_history_error = "; ".join(errors)
+                return []
+
+            self._last_history_error = None
+            return messages
+
+        self._last_history_error = "; ".join(errors) or "Unable to load chat history"
+        return []
 
     def abort_session(self, session_key: str) -> dict:
         """Abort an active session run.

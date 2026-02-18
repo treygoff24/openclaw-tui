@@ -244,3 +244,9 @@ async def test_to_chat_message_converts_raw_messages() -> None:
         assert msg.role in ["user", "assistant", "system", "tool"]
         assert msg.content is not None
         assert msg.timestamp is not None
+
+    # Non-dict payloads should not crash conversion.
+    raw_scalar = "unexpected payload"
+    msg = app._to_chat_message(raw_scalar)
+    assert msg.role == "system"
+    assert "unexpected payload" in msg.content

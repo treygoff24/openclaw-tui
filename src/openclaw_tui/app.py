@@ -273,6 +273,16 @@ Footer {
         return datetime.now().strftime("%H:%M")
 
     @staticmethod
+    def _format_error_status(detail: str | None) -> str:
+        """Format a compact user-facing error status string."""
+        clean = " ".join((detail or "").split())
+        if not clean:
+            return "● error"
+        if len(clean) > 90:
+            clean = f"{clean[:87].rstrip()}..."
+        return f"● error: {clean}"
+
+    @staticmethod
     def _coerce_chat_content(content: object) -> str:
         """Convert gateway content payloads into plain text."""
         if isinstance(content, str):
@@ -300,8 +310,15 @@ Footer {
         return str(content)
 
     @classmethod
-    def _to_chat_message(cls, raw: dict) -> ChatMessage:
+    def _to_chat_message(cls, raw: object) -> ChatMessage:
         """Map gateway history record to ChatMessage."""
+        if not isinstance(raw, dict):
+            return ChatMessage(
+                role="system",
+                content=cls._coerce_chat_content(raw),
+                timestamp="??:??",
+            )
+
         role_raw = str(raw.get("role", "system"))
         role = "tool" if role_raw == "toolResult" else role_raw
         if role not in {"user", "assistant", "system", "tool"}:
@@ -352,16 +369,37 @@ Footer {
         chat_panel = self.query_one(ChatPanel)
         chat_panel.set_status("● loading history...")
 
-        raw_messages = await asyncio.to_thread(self._client.fetch_history, session_key, limit)
+        try:
+            raw_messages = await asyncio.to_thread(self._client.fetch_history, session_key, limit)
+        except ConnectionError as exc:
+            if self._chat_state is None or self._chat_state.session_key != session_key:
+                return
+            detail = str(exc) or "Connection lost while loading history"
+            self._chat_state.error = detail
+            self._chat_state.is_busy = False
+            chat_panel.show_placeholder(f"Failed to load history: {detail}")
+            chat_panel.set_status(self._format_error_status(detail))
+            return
+        except Exception as exc:  # noqa: BLE001
+            if self._chat_state is None or self._chat_state.session_key != session_key:
+                return
+            detail = str(exc) or "Unknown error while loading history"
+            self._chat_state.error = detail
+            self._chat_state.is_busy = False
+            chat_panel.show_placeholder(f"Failed to load history: {detail}")
+            chat_panel.set_status(self._format_error_status(detail))
+            return
+
         if self._chat_state is None or self._chat_state.session_key != session_key:
             return
 
-        # Session doesn't exist / was reaped: show error and offer /back
-        if not raw_messages:
-            self._chat_state.error = "Session not found"
+        history_error = getattr(self._client, "last_history_error", None)
+        if isinstance(history_error, str) and history_error.strip():
+            detail = history_error.strip()
+            self._chat_state.error = detail
             self._chat_state.is_busy = False
-            chat_panel.show_placeholder("Session not found. Type /back to return.")
-            chat_panel.set_status("● error")
+            chat_panel.show_placeholder(f"Failed to load history: {detail}")
+            chat_panel.set_status(self._format_error_status(detail))
             return
 
         messages = [self._to_chat_message(msg) for msg in raw_messages]
@@ -411,10 +449,18 @@ Footer {
                 if self._chat_state is not None and self._chat_state.session_key == session_key:
                     self._chat_state.error = str(exc)
                     self._chat_state.is_busy = False
-                    chat_panel.set_status("● error")
+                    chat_panel.set_status(self._format_error_status(str(exc)))
                 return
 
             if self._chat_state is None or self._chat_state.session_key != session_key:
+                return
+
+            history_error = getattr(self._client, "last_history_error", None)
+            if isinstance(history_error, str) and history_error.strip():
+                detail = history_error.strip()
+                self._chat_state.error = detail
+                self._chat_state.is_busy = False
+                chat_panel.set_status(self._format_error_status(detail))
                 return
 
             messages = [self._to_chat_message(msg) for msg in raw_messages]
@@ -558,7 +604,7 @@ Footer {
             await asyncio.to_thread(self._client.abort_session, session_key)
         except Exception as exc:  # noqa: BLE001
             self._append_system_message(f"Abort failed: {exc}")
-            self.query_one(ChatPanel).set_status("● error")
+            self.query_one(ChatPanel).set_status(self._format_error_status(str(exc)))
             if self._chat_state is not None and self._chat_state.session_key == session_key:
                 self._chat_state.error = str(exc)
             return
@@ -587,7 +633,7 @@ Footer {
                 self._chat_state.is_busy = False
                 self._chat_state.error = str(exc)
                 self._append_system_message(f"Send failed: {exc}")
-                self.query_one(ChatPanel).set_status("● error")
+                self.query_one(ChatPanel).set_status(self._format_error_status(str(exc)))
             return
 
         if self._chat_state is None or self._chat_state.session_key != session_key:

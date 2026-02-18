@@ -48,6 +48,22 @@ FETCH_HISTORY_RESPONSE = {
     }
 }
 
+FETCH_HISTORY_ALT_SHAPE_RESPONSE = {
+    "ok": True,
+    "result": {
+        "details": {
+            "history": [
+                {
+                    "key": "msg-1",
+                    "role": "assistant",
+                    "content": "Alt shape works",
+                    "timestamp": 1771379200000,
+                }
+            ]
+        }
+    },
+}
+
 # Sample response for abort_session
 ABORT_SESSION_RESPONSE = {
     "ok": True,
@@ -248,6 +264,64 @@ class TestFetchHistory:
 
         result = client.fetch_history("agent:main:main")
         assert result == []
+
+    def test_fetch_history_supports_alternate_history_field(self):
+        transport = make_mock_transport(FETCH_HISTORY_ALT_SHAPE_RESPONSE)
+        config = make_config()
+        client = GatewayClient(config)
+        client._client = httpx.Client(
+            base_url=config.base_url,
+            transport=transport,
+        )
+
+        result = client.fetch_history("agent:main:main")
+        assert len(result) == 1
+        assert result[0]["content"] == "Alt shape works"
+        assert client.last_history_error is None
+
+    def test_fetch_history_retries_with_snake_case_session_key(self):
+        captured_bodies = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            captured_bodies.append(body)
+            if len(captured_bodies) == 1:
+                return httpx.Response(
+                    422,
+                    json={"error": "Invalid input: expected session_key"},
+                )
+            return httpx.Response(200, json=FETCH_HISTORY_RESPONSE)
+
+        transport = httpx.MockTransport(handler)
+        config = make_config()
+        client = GatewayClient(config)
+        client._client = httpx.Client(
+            base_url=config.base_url,
+            transport=transport,
+        )
+
+        result = client.fetch_history("agent:main:main")
+
+        assert len(result) == 3
+        assert captured_bodies[0]["input"]["sessionKey"] == "agent:main:main"
+        assert captured_bodies[1]["input"]["session_key"] == "agent:main:main"
+        assert client.last_history_error is None
+
+    def test_fetch_history_sets_descriptive_error(self):
+        transport = make_mock_transport(
+            {"error": "Session not found for session_key"},
+            status_code=404,
+        )
+        config = make_config()
+        client = GatewayClient(config)
+        client._client = httpx.Client(
+            base_url=config.base_url,
+            transport=transport,
+        )
+
+        result = client.fetch_history("agent:main:missing")
+        assert result == []
+        assert client.last_history_error == "Gateway returned HTTP 404: Session not found for session_key"
 
 
 class TestAbortSession:

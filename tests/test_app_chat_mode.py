@@ -239,3 +239,48 @@ async def test_chat_history_loaded_on_session_select() -> None:
         # Verify chat state has messages
         assert app._chat_state is not None
         assert len(app._chat_state.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_chat_history_is_not_treated_as_error() -> None:
+    """Empty history should show a normal placeholder and keep status idle."""
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        app._client.fetch_history.return_value = []
+        app._client.last_history_error = None
+
+        session = _make_session()
+        app._enter_chat_mode_for_session(session)
+
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app._chat_state is not None
+        assert app._chat_state.error is None
+
+        status = app.query_one("#chat-status")
+        assert "connected" in str(status.content).lower()
+
+
+@pytest.mark.asyncio
+async def test_history_load_error_is_shown_with_details() -> None:
+    """History fetch errors should be visible in status/error state."""
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        app._client.fetch_history.return_value = []
+        app._client.last_history_error = "Gateway returned HTTP 422: invalid session key"
+
+        session = _make_session()
+        app._enter_chat_mode_for_session(session)
+
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app._chat_state is not None
+        assert app._chat_state.error == "Gateway returned HTTP 422: invalid session key"
+
+        status = app.query_one("#chat-status")
+        rendered = str(status.content).lower()
+        assert "invalid session key" in rendered
