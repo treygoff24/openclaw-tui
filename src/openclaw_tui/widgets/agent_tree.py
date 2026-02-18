@@ -76,7 +76,7 @@ def _session_label(session: SessionInfo, now_ms: int) -> str:
 
     status = session.status(now_ms)
     icon = _STATUS_MARKUP[status]
-    name = session.label if session.label is not None else session.display_name
+    name = session.label or session.display_name
     model = session.short_model
     tokens = _format_tokens(session.total_tokens)
     chan = _channel_icon(session.channel)

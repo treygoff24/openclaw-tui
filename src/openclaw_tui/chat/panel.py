@@ -102,11 +102,22 @@ class ChatPanel(Vertical):
 
         header.update(f"[bold #F5A623]{stripped}[/]")
 
+    # Status patterns: (substring_match, display_label) - order matters for specificity
+    _BUSY_PATTERNS = (
+        ("loading history", "syncing history..."),
+        ("waiting for response", "thinking..."),
+        ("running shell command", "running shell..."),
+        ("sending", "sending..."),
+        ("aborting", "aborting..."),
+        ("loading", "loading..."),
+    )
+
     def set_status(self, text: str) -> None:
         """Update status with calm idle, alive busy, and clear error states."""
         status = self.query_one("#chat-status")
         lower = text.lower()
 
+        # Error states (priority checks)
         if "connection lost" in lower:
             status.update("[bold #C67B5C]⚠ Connection lost[/]")
             return
@@ -120,25 +131,13 @@ class ChatPanel(Vertical):
             status.update("[dim #A8B5A2]● connected[/]")
             return
 
-        busy_label = None
-        if "loading history" in lower:
-            busy_label = "syncing history..."
-        elif "waiting for response" in lower:
-            busy_label = "thinking..."
-        elif "sending" in lower:
-            busy_label = "sending..."
-        elif "running shell command" in lower:
-            busy_label = "running shell..."
-        elif "aborting" in lower:
-            busy_label = "aborting..."
-        elif "loading" in lower:
-            busy_label = "loading..."
-
-        if busy_label is not None:
-            frame = self._SPINNER_FRAMES[self._spinner_index % len(self._SPINNER_FRAMES)]
-            self._spinner_index += 1
-            status.update(f"[bold #F5A623]{frame}[/] [#A8B5A2]{busy_label}[/]")
-            return
+        # Busy states - single pass pattern matching
+        for pattern, label in self._BUSY_PATTERNS:
+            if pattern in lower:
+                frame = self._SPINNER_FRAMES[self._spinner_index % len(self._SPINNER_FRAMES)]
+                self._spinner_index += 1
+                status.update(f"[bold #F5A623]{frame}[/] [#A8B5A2]{label}[/]")
+                return
 
         status.update(f"[#A8B5A2]{text}[/]")
 

@@ -95,5 +95,7 @@ class RunTrackingState:
     def _trim(values: set[str], max_size: int) -> None:
         if len(values) <= max_size:
             return
-        while len(values) > max_size:
+        # Sets are unordered; trim arbitrary entries until bounded.
+        excess = len(values) - max_size
+        for _ in range(excess):
             values.pop()
