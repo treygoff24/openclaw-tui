@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from openclaw_tui.gateway.device_auth import DeviceIdentity
 from openclaw_tui.gateway.ws_client import GatewayWsClient, GatewayWsRequestTimeoutError
 
 
@@ -45,6 +46,7 @@ async def _ready_client() -> tuple[GatewayWsClient, _FakeWebSocket]:
         connect_delay_s=0.0,
         request_timeout_ms=200,
         connector=connector,
+        device_auth=False,
     )
     await client.start()
     for _ in range(20):
@@ -59,7 +61,7 @@ async def _ready_client() -> tuple[GatewayWsClient, _FakeWebSocket]:
             "type": "res",
             "id": connect_req["id"],
             "ok": True,
-            "payload": {"type": "hello-ok", "protocol": 1},
+            "payload": {"type": "hello-ok", "protocol": 3},
         }
     )
     await client.wait_ready(timeout_ms=500)
@@ -125,17 +127,41 @@ async def test_gap_callback_receives_expected_and_received_seq() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_challenge_does_not_send_fake_device_identity() -> None:
+async def test_connect_challenge_includes_signed_device_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     ws = _FakeWebSocket()
+    stored: list[dict] = []
 
     async def connector(_url: str) -> _FakeWebSocket:
         return ws
+
+    monkeypatch.setattr(
+        "openclaw_tui.gateway.ws_client.public_key_raw_base64url_from_pem",
+        lambda _pem: "pub-raw",
+    )
+    monkeypatch.setattr(
+        "openclaw_tui.gateway.ws_client.sign_device_payload",
+        lambda _pem, _payload: "sig-raw",
+    )
+    monkeypatch.setattr(
+        "openclaw_tui.gateway.ws_client.load_device_auth_token",
+        lambda **_kwargs: {"token": "device-token"},
+    )
+    monkeypatch.setattr(
+        "openclaw_tui.gateway.ws_client.store_device_auth_token",
+        lambda **kwargs: stored.append(kwargs),
+    )
 
     client = GatewayWsClient(
         url="ws://127.0.0.1:2020",
         connect_delay_s=1.0,
         request_timeout_ms=200,
         connector=connector,
+        token="shared-token",
+        device_identity=DeviceIdentity(
+            device_id="device-123",
+            public_key_pem="fake-pub",
+            private_key_pem="fake-priv",
+        ),
     )
     await client.start()
     await ws.push({"type": "event", "event": "connect.challenge", "payload": {"nonce": "abc"}})
@@ -148,15 +174,28 @@ async def test_connect_challenge_does_not_send_fake_device_identity() -> None:
 
     connect_req = ws.sent_frames[-1]
     assert connect_req["method"] == "connect"
-    assert "device" not in connect_req["params"]
+    assert connect_req["params"]["auth"]["token"] == "device-token"
+    assert connect_req["params"]["device"]["id"] == "device-123"
+    assert connect_req["params"]["device"]["publicKey"] == "pub-raw"
+    assert connect_req["params"]["device"]["signature"] == "sig-raw"
+    assert connect_req["params"]["device"]["nonce"] == "abc"
 
     await ws.push(
         {
             "type": "res",
             "id": connect_req["id"],
             "ok": True,
-            "payload": {"type": "hello-ok", "protocol": 3},
+            "payload": {
+                "type": "hello-ok",
+                "protocol": 3,
+                "auth": {
+                    "deviceToken": "new-device-token",
+                    "role": "operator",
+                    "scopes": ["operator.admin"],
+                },
+            },
         }
     )
     await client.wait_ready(timeout_ms=500)
+    assert stored and stored[-1]["token"] == "new-device-token"
     await client.stop()

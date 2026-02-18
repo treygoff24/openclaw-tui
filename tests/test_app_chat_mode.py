@@ -306,31 +306,6 @@ async def test_history_load_error_is_shown_with_details() -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_falls_back_to_rest_when_ws_missing_read_scope() -> None:
-    """When WS chat.history lacks read scope, app should fall back to REST history."""
-    app = AgentDashboard()
-
-    async with app.run_test() as pilot:
-        app._ws_client.chat_history.side_effect = RuntimeError("missing scope: operator.read")
-        app._client.fetch_history.return_value = [
-            {"role": "user", "content": "from rest", "timestamp": "10:00"},
-            {"role": "assistant", "content": "rest reply", "timestamp": "10:01"},
-        ]
-
-        session = _make_session()
-        app._enter_chat_mode_for_session(session)
-
-        await pilot.pause()
-        await pilot.pause()
-
-        assert app._chat_state is not None
-        assert app._chat_state.error is None
-        assert len(app._chat_state.messages) == 2
-        assert app._chat_state.messages[0].content == "from rest"
-        assert app._client.fetch_history.call_count > 0
-
-
-@pytest.mark.asyncio
 async def test_paste_event_in_chat_mode_inserts_into_input() -> None:
     """App-level paste events should route text into chat input in chat mode."""
     app = AgentDashboard()

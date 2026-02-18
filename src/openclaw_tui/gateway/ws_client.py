@@ -3,11 +3,23 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from websockets.asyncio.client import connect as ws_connect
+
+from .device_auth import (
+    DeviceIdentity,
+    build_device_auth_payload,
+    clear_device_auth_token,
+    load_device_auth_token,
+    load_or_create_device_identity,
+    public_key_raw_base64url_from_pem,
+    sign_device_payload,
+    store_device_auth_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +28,7 @@ PROTOCOL_VERSION = 3
 DEFAULT_TIMEOUT_MS = 30_000
 DEFAULT_CONNECT_DELAY_S = 0.75
 TOOL_EVENTS_CAP = "tool-events"
+DEFAULT_SCOPES = ("operator.admin",)
 
 
 class GatewayWsRequestTimeoutError(TimeoutError):
@@ -46,6 +59,10 @@ class GatewayWsClient:
         request_timeout_ms: int = DEFAULT_TIMEOUT_MS,
         connect_delay_s: float = DEFAULT_CONNECT_DELAY_S,
         connector: Callable[[str], Awaitable[Any]] | None = None,
+        role: str = "operator",
+        scopes: list[str] | None = None,
+        device_auth: bool = True,
+        device_identity: DeviceIdentity | None = None,
     ) -> None:
         self.url = url
         self.token = token
@@ -56,6 +73,11 @@ class GatewayWsClient:
         self.request_timeout_ms = max(1, int(request_timeout_ms))
         self.connect_delay_s = max(0.0, float(connect_delay_s))
         self._connector = connector or self._default_connector
+        self.role = role
+        self.scopes = list(scopes) if scopes is not None else list(DEFAULT_SCOPES)
+        self.device_identity = (
+            device_identity if device_auth else None
+        ) or (load_or_create_device_identity() if device_auth else None)
 
         self._ws: Any | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -246,13 +268,51 @@ class GatewayWsClient:
         if self._connect_sent:
             return
         self._connect_sent = True
+        role = self.role
+        requested_scopes = self.scopes
+        stored_token_entry = (
+            load_device_auth_token(device_id=self.device_identity.device_id, role=role)
+            if self.device_identity is not None
+            else None
+        )
+        stored_token = (
+            stored_token_entry.get("token")
+            if isinstance(stored_token_entry, dict)
+            and isinstance(stored_token_entry.get("token"), str)
+            else None
+        )
+        auth_token = stored_token or self.token
+        can_fallback_to_shared = bool(stored_token and self.token)
         auth: dict[str, str] | None = None
-        if self.token or self.password:
+        if auth_token or self.password:
             auth = {}
-            if self.token:
-                auth["token"] = self.token
+            if auth_token:
+                auth["token"] = auth_token
             if self.password:
                 auth["password"] = self.password
+
+        signed_at_ms = int(time.time() * 1000)
+        nonce = self._connect_nonce or None
+        device: dict[str, Any] | None = None
+        if self.device_identity is not None:
+            payload = build_device_auth_payload(
+                device_id=self.device_identity.device_id,
+                client_id="gateway-client",
+                client_mode="ui",
+                role=role,
+                scopes=requested_scopes,
+                signed_at_ms=signed_at_ms,
+                token=auth_token,
+                nonce=nonce,
+            )
+            device = {
+                "id": self.device_identity.device_id,
+                "publicKey": public_key_raw_base64url_from_pem(self.device_identity.public_key_pem),
+                "signature": sign_device_payload(self.device_identity.private_key_pem, payload),
+                "signedAt": signed_at_ms,
+            }
+            if nonce:
+                device["nonce"] = nonce
 
         params = {
             "minProtocol": PROTOCOL_VERSION,
@@ -266,14 +326,41 @@ class GatewayWsClient:
                 "instanceId": str(uuid4()),
             },
             "caps": [TOOL_EVENTS_CAP],
-            "auth": auth,
-            "role": "operator",
-            "scopes": ["operator.read", "operator.admin"],
+            "role": role,
+            "scopes": requested_scopes,
         }
+        if auth is not None:
+            params["auth"] = auth
+        if device is not None:
+            params["device"] = device
 
-        hello = await self.request("connect", params)
+        try:
+            hello = await self.request("connect", params)
+        except Exception:
+            if can_fallback_to_shared and self.device_identity is not None:
+                clear_device_auth_token(device_id=self.device_identity.device_id, role=role)
+                self._connect_sent = False
+                await self._send_connect()
+                return
+            raise
+
         if isinstance(hello, dict):
             self.hello = hello
+            auth_info = hello.get("auth")
+            if (
+                self.device_identity is not None
+                and isinstance(auth_info, dict)
+                and isinstance(auth_info.get("deviceToken"), str)
+            ):
+                auth_role = auth_info.get("role")
+                response_role = auth_role if isinstance(auth_role, str) and auth_role else role
+                response_scopes = auth_info.get("scopes")
+                store_device_auth_token(
+                    device_id=self.device_identity.device_id,
+                    role=response_role,
+                    token=auth_info["deviceToken"],
+                    scopes=response_scopes if isinstance(response_scopes, list) else [],
+                )
         self._connect_error = None
         self._connect_failed.clear()
         self._ready.set()
