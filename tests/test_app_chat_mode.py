@@ -8,7 +8,7 @@ from textual import events
 
 from openclaw_tui.app import AgentDashboard
 from openclaw_tui.widgets import AgentTreeWidget, ChatPanel, LogPanel
-from openclaw_tui.models import ChatMessage, SessionInfo
+from openclaw_tui.models import ChatMessage, SessionInfo, TreeNodeData
 
 
 def _mock_load_config():
@@ -258,6 +258,53 @@ async def test_chat_history_loaded_on_session_select() -> None:
         # Verify chat state has messages
         assert app._chat_state is not None
         assert len(app._chat_state.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_selecting_nested_recursive_node_enters_chat_mode() -> None:
+    """Selecting a nested node from recursive tree should open chat for that exact session key."""
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        app._client.fetch_sessions.return_value = []
+        app._client.fetch_tree.return_value = [
+            TreeNodeData(
+                key="agent:main:main",
+                label="Main",
+                depth=0,
+                status="active",
+                runtime_ms=1000,
+                children=[
+                    TreeNodeData(
+                        key="agent:main:subagent:child",
+                        label="Child",
+                        depth=1,
+                        status="active",
+                        runtime_ms=500,
+                        children=[],
+                    )
+                ],
+            )
+        ]
+        app._ws_client.chat_history.return_value = {"messages": []}
+
+        await app._poll_sessions()
+        await pilot.pause()
+
+        tree = app.query_one(AgentTreeWidget)
+        nested = tree.root.children[0].children[0]
+        assert isinstance(nested.data, SessionInfo)
+
+        class _NodeSelectedEvent:
+            def __init__(self, node):
+                self.node = node
+
+        app.on_tree_node_selected(_NodeSelectedEvent(nested))
+        await pilot.pause()
+
+        assert app._chat_mode is True
+        assert app._chat_state is not None
+        assert app._chat_state.session_key == "agent:main:subagent:child"
 
 
 @pytest.mark.asyncio

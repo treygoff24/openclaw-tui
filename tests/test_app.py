@@ -7,7 +7,7 @@ import pytest
 from textual.widgets import Header, Footer
 
 from openclaw_tui.app import AgentDashboard
-from openclaw_tui.models import TreeNodeData
+from openclaw_tui.models import SessionInfo, TreeNodeData
 from openclaw_tui.widgets import AgentTreeWidget, SummaryBar
 
 
@@ -181,3 +181,66 @@ async def test_poll_falls_back_to_summary_when_tree_stats_missing() -> None:
 
         assert bar.update_summary.call_count >= 1
         bar.update_with_tree_stats.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poll_populates_recursive_tree_with_clickable_session_data() -> None:
+    """Poll should render sessions_tree hierarchy with SessionInfo data at every depth."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        app._client.fetch_sessions.return_value = [
+            SessionInfo(
+                key="agent:main:main",
+                kind="chat",
+                channel="webchat",
+                display_name="Main",
+                label="Main",
+                updated_at=1700000000000,
+                session_id="session-main",
+                model="claude-sonnet-4-20250514",
+                context_tokens=1000,
+                total_tokens=2000,
+                aborted_last_run=False,
+            )
+        ]
+        app._client.fetch_tree.return_value = [
+            TreeNodeData(
+                key="agent:main:main",
+                label="Main",
+                depth=0,
+                status="active",
+                runtime_ms=1000,
+                children=[
+                    TreeNodeData(
+                        key="agent:main:subagent:child",
+                        label="Child",
+                        depth=1,
+                        status="active",
+                        runtime_ms=500,
+                        children=[
+                            TreeNodeData(
+                                key="agent:main:subagent:grandchild",
+                                label="Grandchild",
+                                depth=2,
+                                status="completed",
+                                runtime_ms=250,
+                                children=[],
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+
+        await app._poll_sessions()
+        await pilot.pause()
+
+        tree = app.query_one(AgentTreeWidget)
+        first = tree.root.children[0]
+        second = first.children[0]
+        third = second.children[0]
+        assert isinstance(first.data, SessionInfo)
+        assert isinstance(second.data, SessionInfo)
+        assert isinstance(third.data, SessionInfo)
+        assert second.data.key == "agent:main:subagent:child"
+        assert third.data.key == "agent:main:subagent:grandchild"

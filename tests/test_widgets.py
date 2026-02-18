@@ -8,7 +8,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer
 
-from openclaw_tui.models import AgentNode, SessionInfo, SessionStatus
+from openclaw_tui.models import AgentNode, SessionInfo, SessionStatus, TreeNodeData
 from openclaw_tui.widgets import AgentTreeWidget, SummaryBar
 
 
@@ -221,6 +221,93 @@ async def test_tree_preserves_expansion_state() -> None:
 
         refreshed_group = tree.root.children[0]
         assert not refreshed_group.is_expanded
+
+
+@pytest.mark.asyncio
+async def test_recursive_tree_nodes_are_clickable_sessions() -> None:
+    """Recursive tree nodes should carry SessionInfo data at each depth."""
+    app = WidgetTestApp()
+    async with app.run_test() as pilot:
+        tree = app.query_one(AgentTreeWidget)
+        root_session = make_session(key="agent:main:main", display_name="main")
+        child_session = make_session(key="agent:main:subagent:child", display_name="child")
+        grandchild_session = make_session(
+            key="agent:main:subagent:grandchild",
+            display_name="grandchild",
+        )
+        session_lookup = {
+            root_session.key: root_session,
+            child_session.key: child_session,
+            grandchild_session.key: grandchild_session,
+        }
+        tree_nodes = [
+            TreeNodeData(
+                key=root_session.key,
+                label="Main",
+                depth=0,
+                status="active",
+                runtime_ms=1000,
+                children=[
+                    TreeNodeData(
+                        key=child_session.key,
+                        label="Child",
+                        depth=1,
+                        status="active",
+                        runtime_ms=500,
+                        children=[
+                            TreeNodeData(
+                                key=grandchild_session.key,
+                                label="Grandchild",
+                                depth=2,
+                                status="active",
+                                runtime_ms=250,
+                                children=[],
+                            )
+                        ],
+                    )
+                ],
+            )
+        ]
+
+        tree.update_tree_from_nodes(tree_nodes, NOW_MS, session_lookup=session_lookup)
+        await pilot.pause()
+
+        first = tree.root.children[0]
+        second = first.children[0]
+        third = second.children[0]
+
+        assert isinstance(first.data, SessionInfo)
+        assert isinstance(second.data, SessionInfo)
+        assert isinstance(third.data, SessionInfo)
+        assert first.data.key == root_session.key
+        assert second.data.key == child_session.key
+        assert third.data.key == grandchild_session.key
+
+
+@pytest.mark.asyncio
+async def test_recursive_tree_nodes_synthesize_sessions_when_missing() -> None:
+    """Nodes missing from sessions.list should still be chat-selectable via synthetic SessionInfo."""
+    app = WidgetTestApp()
+    async with app.run_test() as pilot:
+        tree = app.query_one(AgentTreeWidget)
+        tree_nodes = [
+            TreeNodeData(
+                key="agent:main:subagent:ephemeral",
+                label="Ephemeral",
+                depth=0,
+                status="active",
+                runtime_ms=100,
+                children=[],
+            )
+        ]
+
+        tree.update_tree_from_nodes(tree_nodes, NOW_MS, session_lookup={})
+        await pilot.pause()
+
+        node = tree.root.children[0]
+        assert isinstance(node.data, SessionInfo)
+        assert node.data.key == "agent:main:subagent:ephemeral"
+        assert node.data.display_name == "Ephemeral"
 
 
 # ---------------------------------------------------------------------------

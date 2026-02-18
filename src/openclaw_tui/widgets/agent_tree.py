@@ -131,7 +131,62 @@ class AgentTreeWidget(Tree[SessionInfo]):
                 label = _session_label(session, now_ms)
                 group.add_leaf(label, data=session)
 
-    def update_tree_from_nodes(self, tree_nodes: list, now_ms: int) -> None:
+    @staticmethod
+    def _infer_channel_from_key(key: str) -> str:
+        parts = key.split(":")
+        return parts[2] if len(parts) >= 3 and parts[2] else "webchat"
+
+    @classmethod
+    def _synthesize_session(cls, node_data, now_ms: int) -> SessionInfo:
+        key = str(getattr(node_data, "key", "unknown"))
+        label = str(getattr(node_data, "label", key))
+        status = str(getattr(node_data, "status", "active"))
+        # Keep status semantics roughly aligned for synthetic entries.
+        if status == "active":
+            updated_at = now_ms
+            aborted = False
+        elif status == "failed":
+            updated_at = max(0, now_ms - 120_000)
+            aborted = True
+        else:
+            updated_at = max(0, now_ms - 120_000)
+            aborted = False
+        return SessionInfo(
+            key=key,
+            kind="chat",
+            channel=cls._infer_channel_from_key(key),
+            display_name=label,
+            label=label,
+            updated_at=updated_at,
+            session_id=key,
+            model="unknown",
+            context_tokens=None,
+            total_tokens=0,
+            aborted_last_run=aborted,
+        )
+
+    @staticmethod
+    def _snapshot_expanded_nodes(root) -> dict[str, bool]:
+        expanded: dict[str, bool] = {}
+
+        def walk(node) -> None:
+            data = getattr(node, "data", None)
+            key = data.key if isinstance(data, SessionInfo) else node.label.plain
+            expanded[key] = node.is_expanded
+            for child in node.children:
+                walk(child)
+
+        for child in root.children:
+            walk(child)
+        return expanded
+
+    def update_tree_from_nodes(
+        self,
+        tree_nodes: list,
+        now_ms: int,
+        *,
+        session_lookup: dict[str, SessionInfo] | None = None,
+    ) -> None:
         """Update tree with hierarchical TreeNodeData for subagent view.
 
         Args:
@@ -142,6 +197,9 @@ class AgentTreeWidget(Tree[SessionInfo]):
         Completed/failed nodes show their runtime via format_runtime().
         """
         from ..models import TreeNodeData, format_runtime
+
+        expanded = self._snapshot_expanded_nodes(self.root)
+        lookup = session_lookup or {}
 
         self.clear()
         self.root.expand()
@@ -163,13 +221,15 @@ class AgentTreeWidget(Tree[SessionInfo]):
             if runtime:
                 label += f" [{runtime}]"
 
+            session = lookup.get(node_data.key) or self._synthesize_session(node_data, now_ms)
+            should_expand = expanded.get(session.key, True)
+
             if node_data.children:
-                node = parent.add(label)
-                node.expand()
+                node = parent.add(label, data=session, expand=should_expand)
                 for child in node_data.children:
                     add_node(node, child)
             else:
-                parent.add_leaf(label, data=node_data)
+                parent.add_leaf(label, data=session)
 
         for tree_node in tree_nodes:
             add_node(self.root, tree_node)
