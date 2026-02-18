@@ -143,12 +143,12 @@ def _detect_image_extension(data: bytes) -> str | None:
 
 
 def _write_clipboard_image(data: bytes, extension: str) -> Path:
-    """Persist clipboard image bytes and opportunistically prune stale files."""
-    cache_dir = Path.home() / ".cache" / "openclaw_tui" / "clipboard"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    _cleanup_old_clipboard_images(cache_dir)
+    """Persist clipboard image bytes under OpenClaw media path and prune stale files."""
+    media_dir = Path.home() / ".openclaw" / "media" / "clipboard"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    _cleanup_old_clipboard_images(media_dir)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    output_path = cache_dir / f"paste-{timestamp}-{uuid4().hex[:8]}.{extension}"
+    output_path = media_dir / f"paste-{timestamp}-{uuid4().hex[:8]}.{extension}"
     output_path.write_bytes(data)
     return output_path
 

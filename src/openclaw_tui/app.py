@@ -1254,14 +1254,11 @@ Footer {
         """Route pasted text into chat input while in chat mode."""
         if not self._chat_mode:
             return
-        # Some terminals emit paste events (not key events) for Cmd/Ctrl+V.
-        # Try image staging first so clipboard images work in that path too.
-        if self._paste_image_from_system_clipboard():
+        if event.text and self._insert_text_into_chat_input(event.text):
             event.stop()
             return
-        if not event.text:
-            return
-        if self._insert_text_into_chat_input(event.text):
+        # Some terminals emit paste events with empty text for image paste.
+        if self._paste_image_from_system_clipboard():
             event.stop()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -1273,7 +1270,10 @@ Footer {
         if self._chat_state.is_busy:
             return
 
-        chat_panel = self.query_one(ChatPanel)
+        try:
+            chat_panel = self.query_one(ChatPanel)
+        except Exception:  # noqa: BLE001
+            return
         hint = format_command_hint(event.value)
         if hint:
             chat_panel.set_status(f"● {hint}")
@@ -1383,11 +1383,11 @@ Footer {
     def on_key(self, event: events.Key) -> None:
         """Escape in chat mode exits back to transcript if input is empty."""
         if self._chat_mode and event.key in {"ctrl+v", "meta+v", "alt+v", "shift+insert"}:
-            if self._paste_image_from_system_clipboard():
+            if self._paste_from_system_clipboard():
                 event.prevent_default()
                 event.stop()
                 return
-            if self._paste_from_system_clipboard():
+            if self._paste_image_from_system_clipboard():
                 event.prevent_default()
                 event.stop()
                 return
