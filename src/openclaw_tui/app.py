@@ -8,6 +8,7 @@ import inspect
 import logging
 import subprocess
 import time
+from uuid import uuid4
 
 from textual import events
 from textual.app import App, ComposeResult
@@ -16,9 +17,13 @@ from textual.theme import Theme
 from textual.widgets import Footer, Header, Tree
 
 from .chat import ChatState
-from .chat.commands import ParsedInput, format_help, parse_input
+from .chat.commands import format_help, parse_input
+from .chat.command_handlers import ChatCommandHandlers
+from .chat.event_handlers import ChatEventProcessor
+from .chat.runtime_types import CommandResult, RunTrackingState
 from .client import GatewayClient, GatewayError
 from .config import load_config
+from .gateway import GatewayWsClient
 from .models import ChatMessage, SessionInfo
 from .tree import build_tree
 from .transcript import read_transcript
@@ -112,6 +117,16 @@ Footer {
         logger.info("AgentDashboard mounted — starting poll loop")
         self._config = load_config()
         self._client = GatewayClient(self._config)
+        self._ws_client: GatewayWsClient | None = None
+        self._chat_events: ChatEventProcessor | None = None
+        self._run_tracking: RunTrackingState | None = None
+        self._chat_commands = ChatCommandHandlers(
+            client=self,
+            state=self,
+            on_send_text=self._send_user_chat_message,
+            on_system=self._append_system_message,
+            on_known_command=self._run_known_chat_command,
+        )
         self._selected_session: SessionInfo | None = None
         self._chat_mode: bool = False
         self._chat_state: ChatState | None = None
@@ -130,12 +145,87 @@ Footer {
             panel="#16213E",
         ))
         self.theme = "hearth"
+        self.run_worker(self._connect_ws_gateway, exclusive=True, group="chat_gateway_connect")
         self.set_interval(2.0, self._trigger_poll)
         self._trigger_poll()  # immediate first poll
 
     def _trigger_poll(self) -> None:
         """Trigger an exclusive worker to poll the gateway."""
         self.run_worker(self._poll_sessions, exclusive=True, group="session_poll")
+
+    @property
+    def current_session_key(self) -> str:
+        if self._chat_state is None:
+            return ""
+        return self._chat_state.session_key
+
+    @property
+    def active_run_id(self) -> str | None:
+        if self._chat_state is None:
+            return None
+        return self._chat_state.active_run_id
+
+    async def chat_abort(self, session_key: str, run_id: str | None = None) -> dict:
+        if self._ws_client is None:
+            raise RuntimeError("chat transport unavailable")
+        return await self._ws_client.chat_abort(session_key, run_id=run_id)
+
+    async def _connect_ws_gateway(self) -> None:
+        """Connect to gateway WebSocket for chat parity transport."""
+        ws_client = GatewayWsClient(
+            url=self._config.ws_url,
+            token=self._config.token,
+            client_display_name="openclaw-tui",
+            client_version="0.1.0",
+            platform="python",
+        )
+        ws_client.on_event = self._on_gateway_event
+        ws_client.on_disconnected = self._on_gateway_disconnected
+        ws_client.on_gap = self._on_gateway_gap
+        try:
+            await ws_client.start()
+            await ws_client.wait_ready()
+            self._ws_client = ws_client
+            logger.info("Chat WebSocket connected: %s", self._config.ws_url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Chat WebSocket failed: %s", exc)
+            self._show_poll_error(f"Chat websocket unavailable: {exc}")
+
+    def _on_gateway_event(self, evt: dict) -> None:
+        if self._chat_mode is False or self._chat_events is None:
+            return
+        event_type = evt.get("event")
+        payload = evt.get("payload")
+        if event_type == "chat":
+            self._chat_events.handle_chat_event(payload)
+            if self._chat_state is not None and self._run_tracking is not None:
+                self._chat_state.active_run_id = self._run_tracking.active_run_id
+                self._chat_state.local_run_ids = set(self._run_tracking.local_run_ids)
+                self._chat_state.finalized_run_ids = set(self._run_tracking.finalized_run_ids)
+            return
+        if event_type == "agent":
+            verbose = "off"
+            if self._chat_state is not None and self._chat_state.verbose_level:
+                verbose = self._chat_state.verbose_level
+            self._chat_events.handle_agent_event(payload, verbose_level=verbose)
+
+    def _on_gateway_disconnected(self, reason: str) -> None:
+        if not self._chat_mode:
+            return
+        panel = self.query_one(ChatPanel)
+        panel.set_status(f"● error: gateway disconnected: {reason}")
+
+    def _on_gateway_gap(self, info: dict[str, int]) -> None:
+        if not self._chat_mode or self._chat_state is None:
+            return
+        self.query_one(ChatPanel).set_status(
+            f"● error: event gap expected {info['expected']} got {info['received']}"
+        )
+        self.run_worker(
+            partial(self._load_chat_history, self._chat_state.session_key, 200),
+            exclusive=True,
+            group="chat_history",
+        )
 
     async def _poll_sessions(self) -> None:
         """Worker coroutine: fetch sessions, build tree, update widgets.
@@ -233,7 +323,7 @@ Footer {
             agent_id=session.agent_id,
             session_info=session,
         )
-        self.workers.cancel_group(self, "chat_poll")
+        self._reset_chat_runtime_for_session(session.key)
         self.query_one(LogPanel).display = False
 
         chat_panel = self.query_one(ChatPanel)
@@ -253,7 +343,6 @@ Footer {
 
     def _exit_chat_mode(self) -> None:
         """Exit chat mode and return to transcript view."""
-        self.workers.cancel_group(self, "chat_poll")
         self.workers.cancel_group(self, "chat_history")
 
         chat_panel = self.query_one(ChatPanel)
@@ -266,6 +355,8 @@ Footer {
         log_panel.display = True
 
         self._chat_mode = False
+        self._chat_events = None
+        self._run_tracking = None
         self._chat_state = None
         if self._selected_session is not None:
             self._show_transcript_for_session(self._selected_session)
@@ -364,6 +455,61 @@ Footer {
         self._chat_state.messages.append(message)
         self._chat_state.last_message_count = len(self._chat_state.messages)
 
+    def _on_chat_status(self, status: str) -> None:
+        if self._chat_state is None:
+            return
+        if status in {"idle", "error", "aborted"}:
+            self._chat_state.is_busy = False
+        self.query_one(ChatPanel).set_status(f"● {status}")
+
+    def _on_assistant_stream_update(self, text: str, run_id: str) -> None:
+        if self._chat_state is None:
+            return
+        state = self._chat_state
+        idx = state.stream_message_index_by_run.get(run_id)
+        if idx is None:
+            message = ChatMessage(role="assistant", content=text, timestamp=self._now_hhmm())
+            state.messages.append(message)
+            state.stream_message_index_by_run[run_id] = len(state.messages) - 1
+        else:
+            state.messages[idx].content = text
+        state.last_message_count = len(state.messages)
+        self.query_one(ChatPanel).show_messages(state.messages)
+
+    def _on_assistant_stream_final(self, text: str, run_id: str) -> None:
+        if self._chat_state is None:
+            return
+        state = self._chat_state
+        idx = state.stream_message_index_by_run.pop(run_id, None)
+        if idx is None:
+            state.messages.append(ChatMessage(role="assistant", content=text, timestamp=self._now_hhmm()))
+        else:
+            state.messages[idx].content = text
+        state.last_message_count = len(state.messages)
+        state.active_run_id = None
+        self.query_one(ChatPanel).show_messages(state.messages)
+
+    def _reset_chat_runtime_for_session(self, session_key: str) -> None:
+        self._run_tracking = RunTrackingState(session_key=session_key)
+        self._chat_events = ChatEventProcessor(
+            state=self._run_tracking,
+            on_assistant_update=self._on_assistant_stream_update,
+            on_assistant_final=self._on_assistant_stream_final,
+            on_system=self._append_system_message,
+            on_status=self._on_chat_status,
+            include_thinking=bool(self._chat_state and self._chat_state.thinking_level),
+            on_refresh_history=self._refresh_history_if_active,
+        )
+
+    def _refresh_history_if_active(self) -> None:
+        if self._chat_state is None:
+            return
+        self.run_worker(
+            partial(self._load_chat_history, self._chat_state.session_key, 200),
+            exclusive=True,
+            group="chat_history",
+        )
+
     async def _load_chat_history(self, session_key: str, limit: int = 30) -> None:
         """Fetch history for a chat session and render it."""
         state = self._chat_state
@@ -374,16 +520,9 @@ Footer {
         chat_panel.set_status("● loading history...")
 
         try:
-            raw_messages = await asyncio.to_thread(self._client.fetch_history, session_key, limit)
-        except ConnectionError as exc:
-            if self._chat_state is None or self._chat_state.session_key != session_key:
-                return
-            detail = str(exc) or "Connection lost while loading history"
-            self._chat_state.error = detail
-            self._chat_state.is_busy = False
-            chat_panel.show_placeholder(f"Failed to load history: {detail}")
-            chat_panel.set_status(self._format_error_status(detail))
-            return
+            if self._ws_client is None:
+                raise RuntimeError("Chat websocket unavailable")
+            history = await self._ws_client.chat_history(session_key, limit=limit)
         except Exception as exc:  # noqa: BLE001
             if self._chat_state is None or self._chat_state.session_key != session_key:
                 return
@@ -397,18 +536,12 @@ Footer {
         if self._chat_state is None or self._chat_state.session_key != session_key:
             return
 
-        history_error = getattr(self._client, "last_history_error", None)
-        if isinstance(history_error, str) and history_error.strip():
-            detail = history_error.strip()
-            self._chat_state.error = detail
-            self._chat_state.is_busy = False
-            chat_panel.show_placeholder(f"Failed to load history: {detail}")
-            chat_panel.set_status(self._format_error_status(detail))
-            return
-
-        messages = [self._to_chat_message(msg) for msg in raw_messages]
+        messages = [self._to_chat_message(msg) for msg in history.get("messages", [])]
         self._chat_state.messages = messages
         self._chat_state.last_message_count = len(messages)
+        self._chat_state.stream_message_index_by_run.clear()
+        self._chat_state.thinking_level = history.get("thinkingLevel")
+        self._chat_state.verbose_level = history.get("verboseLevel") or "off"
         self._chat_state.is_busy = False
         self._chat_state.error = None
 
@@ -489,69 +622,221 @@ Footer {
             chat_panel.set_status("● timeout")
             self._append_system_message("Timed out waiting for response.")
 
-    def _run_chat_command(self, parsed: ParsedInput) -> None:
-        """Handle slash commands in chat mode."""
+    def _run_chat_command(self, raw: str) -> None:
+        """Handle slash commands in chat mode using parity command router."""
         if self._chat_state is None:
             return
+        self.run_worker(
+            partial(self._run_chat_command_async, raw),
+            exclusive=True,
+            group="chat_command",
+        )
 
-        if parsed.name == "help":
+    async def _run_chat_command_async(self, raw: str) -> None:
+        try:
+            await self._chat_commands.handle(raw)
+        except Exception as exc:  # noqa: BLE001
+            self._append_system_message(f"Command failed: {exc}")
+
+    async def _run_known_chat_command(self, name: str, args: str) -> CommandResult:
+        if self._chat_state is None:
+            return CommandResult(ok=False, message="No active chat session")
+        ws_client = self._ws_client
+        if name == "help":
             self._append_system_message(format_help())
-            return
+            return CommandResult(ok=True)
 
-        if parsed.name == "status":
+        if name == "commands":
+            self._append_system_message(format_help())
+            return CommandResult(ok=True)
+
+        if name == "status":
             session = self._chat_state.session_info
             status_text = (
                 f"Agent: {session.agent_id}\n"
-                f"Session: {session.key}\n"
+                f"Session: {self._chat_state.session_key}\n"
                 f"Name: {session.label or session.display_name}\n"
                 f"Model: {session.model}\n"
                 f"Tokens: {session.total_tokens}"
             )
             self._append_system_message(status_text)
-            return
+            return CommandResult(ok=True)
 
-        if parsed.name == "abort":
-            self.workers.cancel_group(self, "chat_poll")
-            if self._chat_state is not None:
-                self._chat_state.is_busy = False
-            self.query_one(ChatPanel).set_status("● aborting...")
-            self._append_system_message("Aborted")
-            self.run_worker(
-                partial(self._abort_chat_session, self._chat_state.session_key),
-                exclusive=True,
-                group="chat_abort",
-            )
-            return
-
-        if parsed.name == "back":
+        if name == "back":
             self._exit_chat_mode()
-            return
+            return CommandResult(ok=True)
 
-        if parsed.name == "history":
+        if name == "history":
             limit = 30
-            if parsed.args:
+            if args:
                 try:
-                    limit = max(1, int(parsed.args.strip()))
+                    limit = max(1, int(args.strip()))
                 except ValueError:
                     self._append_system_message("Usage: /history [n]")
-                    return
-            self.run_worker(
-                partial(self._load_chat_history, self._chat_state.session_key, limit),
-                exclusive=True,
-                group="chat_history",
-            )
-            return
+                    return CommandResult(ok=False)
+            await self._load_chat_history(self._chat_state.session_key, limit)
+            return CommandResult(ok=True)
 
-        if parsed.name == "clear":
+        if name == "clear":
             chat_panel = self.query_one(ChatPanel)
             chat_panel.clear_log()
             self._chat_state.messages = []
             self._chat_state.last_message_count = 0
             chat_panel.set_status("● idle")
-            return
+            return CommandResult(ok=True)
 
-        unknown = parsed.name or "(empty)"
-        self._append_system_message(f"Unknown command: /{unknown}\nTry /help")
+        if name in {"exit", "quit"}:
+            self.exit()
+            return CommandResult(ok=True)
+
+        if ws_client is None:
+            self._append_system_message("gateway websocket unavailable")
+            return CommandResult(ok=False)
+
+        if name in {"new", "reset"}:
+            await ws_client.sessions_reset(self._chat_state.session_key)
+            await self._load_chat_history(self._chat_state.session_key, 200)
+            return CommandResult(ok=True)
+
+        if name in {"models", "model"} and not args:
+            models = await ws_client.models_list()
+            if not models:
+                self._append_system_message("no models available")
+                return CommandResult(ok=True)
+            lines = ["models:"]
+            for model in models[:20]:
+                provider = model.get("provider", "unknown")
+                model_id = model.get("id", "")
+                lines.append(f"- {provider}/{model_id}")
+            self._append_system_message("\n".join(lines))
+            return CommandResult(ok=True)
+
+        if name == "model" and args:
+            await ws_client.sessions_patch(key=self._chat_state.session_key, model=args.strip())
+            self._append_system_message(f"model set to {args.strip()}")
+            return CommandResult(ok=True)
+
+        if name in {"agents", "agent"} and not args:
+            result = await ws_client.agents_list()
+            agents = result.get("agents", [])
+            if not agents:
+                self._append_system_message("no agents found")
+                return CommandResult(ok=True)
+            lines = ["agents:"]
+            for agent in agents:
+                lines.append(f"- {agent.get('id', 'unknown')}")
+            self._append_system_message("\n".join(lines))
+            return CommandResult(ok=True)
+
+        if name == "agent" and args:
+            target_agent = args.strip()
+            sessions = await ws_client.sessions_list(
+                includeGlobal=False,
+                includeUnknown=False,
+                agentId=target_agent,
+            )
+            entries = sessions.get("sessions", [])
+            main_match = next(
+                (entry for entry in entries if isinstance(entry, dict) and str(entry.get("key", "")).endswith(":main")),
+                None,
+            )
+            chosen = main_match or (entries[0] if entries else None)
+            if not isinstance(chosen, dict) or not isinstance(chosen.get("key"), str):
+                self._append_system_message(f"agent not found: {target_agent}")
+                return CommandResult(ok=False)
+            await self._switch_chat_session(chosen["key"])
+            return CommandResult(ok=True)
+
+        if name in {"sessions", "session"} and not args:
+            result = await ws_client.sessions_list(
+                includeGlobal=False,
+                includeUnknown=False,
+                includeDerivedTitles=True,
+                includeLastMessage=True,
+                agentId=self._chat_state.agent_id,
+            )
+            entries = result.get("sessions", [])
+            if not entries:
+                self._append_system_message("no sessions found")
+                return CommandResult(ok=True)
+            lines = ["sessions:"]
+            for entry in entries[:25]:
+                key = entry.get("key", "")
+                title = entry.get("derivedTitle") or entry.get("displayName") or key
+                lines.append(f"- {title} ({key})")
+            self._append_system_message("\n".join(lines))
+            return CommandResult(ok=True)
+
+        if name == "session" and args:
+            await self._switch_chat_session(args.strip())
+            return CommandResult(ok=True)
+
+        if name == "usage":
+            choice = args.strip().lower() if args else "tokens"
+            if choice not in {"off", "tokens", "full"}:
+                self._append_system_message("usage: /usage <off|tokens|full>")
+                return CommandResult(ok=False)
+            await ws_client.sessions_patch(
+                key=self._chat_state.session_key,
+                responseUsage=None if choice == "off" else choice,
+            )
+            self._append_system_message(f"usage footer: {choice}")
+            return CommandResult(ok=True)
+
+        if name == "think":
+            if not args:
+                self._append_system_message("usage: /think <level>")
+                return CommandResult(ok=False)
+            await ws_client.sessions_patch(
+                key=self._chat_state.session_key,
+                thinkingLevel=args.strip(),
+            )
+            self._append_system_message(f"thinking set to {args.strip()}")
+            return CommandResult(ok=True)
+
+        if name == "verbose":
+            if not args:
+                self._append_system_message("usage: /verbose <on|off>")
+                return CommandResult(ok=False)
+            await ws_client.sessions_patch(
+                key=self._chat_state.session_key,
+                verboseLevel=args.strip(),
+            )
+            self._chat_state.verbose_level = args.strip()
+            self._append_system_message(f"verbose set to {args.strip()}")
+            return CommandResult(ok=True)
+
+        if name == "reasoning":
+            if not args:
+                self._append_system_message("usage: /reasoning <on|off>")
+                return CommandResult(ok=False)
+            await ws_client.sessions_patch(
+                key=self._chat_state.session_key,
+                reasoningLevel=args.strip(),
+            )
+            self._append_system_message(f"reasoning set to {args.strip()}")
+            return CommandResult(ok=True)
+
+        if name in {"elevated", "activation", "settings"}:
+            self._append_system_message(f"/{name} acknowledged")
+            return CommandResult(ok=True)
+
+        return CommandResult(ok=False, handled=False)
+
+    async def _switch_chat_session(self, session_key: str) -> None:
+        if self._chat_state is None:
+            return
+        normalized = session_key.strip()
+        if normalized and normalized not in {"global", "unknown"} and not normalized.startswith("agent:"):
+            normalized = f"agent:{self._chat_state.agent_id}:{normalized}"
+        self._chat_state.current_session_key = normalized
+        self._chat_state.active_run_id = None
+        self._chat_state.stream_message_index_by_run.clear()
+        self._reset_chat_runtime_for_session(normalized)
+        self.query_one(ChatPanel).set_header(
+            f"{normalized} · {self._chat_state.agent_id} · {self._chat_state.session_info.short_model}"
+        )
+        await self._load_chat_history(normalized, 200)
 
     def _run_bang_command(self, command_text: str) -> None:
         """Execute a shell command and post output as a system message."""
@@ -605,7 +890,10 @@ Footer {
     async def _abort_chat_session(self, session_key: str) -> None:
         """Call gateway abort and report result in chat panel."""
         try:
-            await asyncio.to_thread(self._client.abort_session, session_key)
+            if self._ws_client is None:
+                raise RuntimeError("chat websocket unavailable")
+            run_id = self._chat_state.active_run_id if self._chat_state is not None else None
+            await self._ws_client.chat_abort(session_key, run_id=run_id)
         except Exception as exc:  # noqa: BLE001
             self._append_system_message(f"Abort failed: {exc}")
             self.query_one(ChatPanel).set_status(self._format_error_status(str(exc)))
@@ -620,9 +908,25 @@ Footer {
         self.query_one(ChatPanel).set_status("● idle")
 
     async def _send_chat_message(self, session_key: str, message: str) -> None:
-        """Send a user message to gateway then start response polling."""
+        """Send a user message to gateway via websocket transport."""
         try:
-            await asyncio.to_thread(self._client.send_message, session_key, message)
+            if self._ws_client is None:
+                raise RuntimeError("chat websocket unavailable")
+            run_id = str(uuid4())
+            if self._chat_state is not None:
+                self._chat_state.active_run_id = run_id
+                self._chat_state.local_run_ids.add(run_id)
+            if self._run_tracking is not None:
+                self._run_tracking.active_run_id = run_id
+                self._run_tracking.note_local_run(run_id)
+            await self._ws_client.send_chat(
+                session_key=session_key,
+                message=message,
+                thinking=self._chat_state.thinking_level if self._chat_state is not None else None,
+                deliver=False,
+                timeout_ms=30_000,
+                run_id=run_id,
+            )
         except ConnectionError as exc:
             logger.warning("send_message connection lost for %s: %s", session_key, exc)
             if self._chat_state is not None and self._chat_state.session_key == session_key:
@@ -645,7 +949,6 @@ Footer {
 
         self._chat_state.error = None
         self.query_one(ChatPanel).set_status("● waiting for response...")
-        self._start_chat_poll_worker()
 
     def _send_user_chat_message(self, content: str) -> None:
         """Append local user message and dispatch send worker."""
@@ -707,7 +1010,7 @@ Footer {
 
         parsed = parse_input(text)
         if parsed.kind == "command":
-            self._run_chat_command(parsed)
+            self._run_chat_command(parsed.raw)
             return
         if parsed.kind == "bang":
             self._run_bang_command(parsed.name)
@@ -838,7 +1141,50 @@ Footer {
             event.stop()
             return
 
+        if self._chat_mode and event.key == "ctrl+l":
+            self._run_chat_command("/models")
+            event.prevent_default()
+            event.stop()
+            return
+
+        if self._chat_mode and event.key == "ctrl+g":
+            self._run_chat_command("/agents")
+            event.prevent_default()
+            event.stop()
+            return
+
+        if self._chat_mode and event.key == "ctrl+p":
+            self._run_chat_command("/sessions")
+            event.prevent_default()
+            event.stop()
+            return
+
+        if self._chat_mode and event.key == "ctrl+t":
+            if self._chat_state is not None:
+                self._chat_state.thinking_level = (
+                    None if self._chat_state.thinking_level else "on"
+                )
+                if self._chat_events is not None:
+                    self._chat_events.set_include_thinking(bool(self._chat_state.thinking_level))
+                self.run_worker(
+                    partial(self._load_chat_history, self._chat_state.session_key, 200),
+                    exclusive=True,
+                    group="chat_history",
+                )
+            event.prevent_default()
+            event.stop()
+            return
+
         if event.key != "escape" or not self._chat_mode:
+            return
+
+        if self._chat_state is not None and self._chat_state.active_run_id:
+            self.run_worker(
+                partial(self._abort_chat_session, self._chat_state.session_key),
+                exclusive=True,
+                group="chat_abort",
+            )
+            event.stop()
             return
 
         input_widget = self._chat_input_widget()
@@ -852,6 +1198,21 @@ Footer {
 
     def on_unmount(self) -> None:
         """Clean up HTTP client on exit."""
+        ws_client = self._ws_client
+        if ws_client is not None:
+            stop_method = getattr(ws_client, "stop", None)
+            if callable(stop_method):
+                stop_result = stop_method()
+                if inspect.isawaitable(stop_result):
+                    shutdown_task = asyncio.create_task(stop_result)
+
+                    def _consume_shutdown_error(task: asyncio.Task[object]) -> None:
+                        try:
+                            task.result()
+                        except Exception:
+                            logger.exception("Gateway websocket shutdown failed")
+
+                    shutdown_task.add_done_callback(_consume_shutdown_error)
         if hasattr(self, "_client"):
             logger.info("Closing gateway client")
             self._client.close()

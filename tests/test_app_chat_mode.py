@@ -1,7 +1,7 @@
 """E6: App integration tests for chat mode."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from textual import events
@@ -40,6 +40,23 @@ def _mock_gateway(monkeypatch):
     monkeypatch.setattr(
         "openclaw_tui.app.GatewayClient",
         MagicMock(return_value=mock_client),
+    )
+    mock_ws_client = MagicMock()
+    mock_ws_client.start = AsyncMock()
+    mock_ws_client.wait_ready = AsyncMock()
+    mock_ws_client.stop = AsyncMock()
+    mock_ws_client.chat_history = AsyncMock(return_value={"messages": []})
+    mock_ws_client.send_chat = AsyncMock(return_value={"runId": "run-test"})
+    mock_ws_client.chat_abort = AsyncMock(return_value={"ok": True, "aborted": True})
+    mock_ws_client.sessions_list = AsyncMock(return_value={"sessions": []})
+    mock_ws_client.sessions_patch = AsyncMock(return_value={})
+    mock_ws_client.sessions_reset = AsyncMock(return_value={})
+    mock_ws_client.agents_list = AsyncMock(return_value={"agents": []})
+    mock_ws_client.models_list = AsyncMock(return_value={"models": []})
+    mock_ws_client.status = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(
+        "openclaw_tui.app.GatewayWsClient",
+        MagicMock(return_value=mock_ws_client),
     )
     monkeypatch.setattr(
         "openclaw_tui.app.build_tree",
@@ -221,11 +238,12 @@ async def test_chat_history_loaded_on_session_select() -> None:
     app = AgentDashboard()
 
     async with app.run_test() as pilot:
-        # Return some mock history
-        app._client.fetch_history.return_value = [
-            {"role": "user", "content": "Hello", "timestamp": "10:00"},
-            {"role": "assistant", "content": "Hi there!", "timestamp": "10:01"},
-        ]
+        app._ws_client.chat_history.return_value = {
+            "messages": [
+                {"role": "user", "content": "Hello", "timestamp": "10:00"},
+                {"role": "assistant", "content": "Hi there!", "timestamp": "10:01"},
+            ]
+        }
 
         session = _make_session()
         app._enter_chat_mode_for_session(session)
@@ -234,8 +252,8 @@ async def test_chat_history_loaded_on_session_select() -> None:
         await pilot.pause()
         await pilot.pause()
 
-        # Verify fetch_history was called
-        assert app._client.fetch_history.called
+        # Verify websocket history was called
+        assert app._ws_client.chat_history.await_count > 0
 
         # Verify chat state has messages
         assert app._chat_state is not None
@@ -248,8 +266,7 @@ async def test_empty_chat_history_is_not_treated_as_error() -> None:
     app = AgentDashboard()
 
     async with app.run_test() as pilot:
-        app._client.fetch_history.return_value = []
-        app._client.last_history_error = None
+        app._ws_client.chat_history.return_value = {"messages": []}
 
         session = _make_session()
         app._enter_chat_mode_for_session(session)
@@ -270,8 +287,9 @@ async def test_history_load_error_is_shown_with_details() -> None:
     app = AgentDashboard()
 
     async with app.run_test() as pilot:
-        app._client.fetch_history.return_value = []
-        app._client.last_history_error = "Gateway returned HTTP 422: invalid session key"
+        app._ws_client.chat_history.side_effect = RuntimeError(
+            "Gateway returned HTTP 422: invalid session key"
+        )
 
         session = _make_session()
         app._enter_chat_mode_for_session(session)

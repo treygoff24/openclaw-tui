@@ -23,6 +23,10 @@ class GatewayConfig:
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    @property
+    def ws_url(self) -> str:
+        return f"ws://{self.host}:{self.port}"
+
 
 def load_config(config_path: str | None = None) -> GatewayConfig:
     """Load config from ~/.openclaw/openclaw.json, falling back to env vars.

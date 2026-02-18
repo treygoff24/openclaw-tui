@@ -1,0 +1,60 @@
+{
+  "session_key": "agent:main:main",
+  "run_id": "run-parity-1",
+  "events": [
+    {
+      "event": "chat",
+      "payload": {
+        "runId": "run-parity-1",
+        "sessionKey": "agent:main:main",
+        "seq": 1,
+        "state": "delta",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event": "chat",
+      "payload": {
+        "runId": "run-parity-1",
+        "sessionKey": "agent:main:main",
+        "seq": 2,
+        "state": "delta",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello there"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "event": "chat",
+      "payload": {
+        "runId": "run-parity-1",
+        "sessionKey": "agent:main:main",
+        "seq": 3,
+        "state": "final",
+        "message": {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "hello there!"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

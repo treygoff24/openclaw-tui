@@ -8,6 +8,7 @@ A Hearth-inspired live terminal dashboard for monitoring OpenClaw agent sessions
 ## Features
 
 - **Live agent session tree** — Polls every 2 seconds
+- **WebSocket chat parity transport** — Uses gateway `chat.send/chat.history/chat.abort`
 - **Hearth-inspired dark theme** — Amber #F5A623 accent, deep navy #1A1A2E background
 - **Relative timestamps** — "active", "3m ago", "2h ago"
 - **Channel icons** — ⌨ discord, ⏱ cron, 🔥 hearth, 🌐 webchat
@@ -52,7 +53,13 @@ Auto-reads `~/.openclaw/openclaw.json` — no manual config needed.
 |-----|--------|
 | q | Quit |
 | r | Refresh now |
-| c | Copy session info to clipboard |
+| cmd+c | Copy session info / transcript |
+| ctrl+c | Double-press to quit |
+| esc | Abort active run (if running), otherwise leave chat when input is empty |
+| ctrl+l | Open/list models |
+| ctrl+g | Open/list agents |
+| ctrl+p | Open/list sessions |
+| ctrl+t | Toggle thinking visibility and refresh history |
 
 ## Color Palette
 

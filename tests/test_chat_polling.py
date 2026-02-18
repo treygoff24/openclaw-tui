@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -40,6 +40,23 @@ def _mock_gateway(monkeypatch):
     monkeypatch.setattr(
         "openclaw_tui.app.GatewayClient",
         MagicMock(return_value=mock_client),
+    )
+    mock_ws_client = MagicMock()
+    mock_ws_client.start = AsyncMock()
+    mock_ws_client.wait_ready = AsyncMock()
+    mock_ws_client.stop = AsyncMock()
+    mock_ws_client.chat_history = AsyncMock(return_value={"messages": []})
+    mock_ws_client.send_chat = AsyncMock(return_value={"runId": "run-test"})
+    mock_ws_client.chat_abort = AsyncMock(return_value={"ok": True, "aborted": True})
+    mock_ws_client.sessions_list = AsyncMock(return_value={"sessions": []})
+    mock_ws_client.sessions_patch = AsyncMock(return_value={})
+    mock_ws_client.sessions_reset = AsyncMock(return_value={})
+    mock_ws_client.agents_list = AsyncMock(return_value={"agents": []})
+    mock_ws_client.models_list = AsyncMock(return_value={"models": []})
+    mock_ws_client.status = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(
+        "openclaw_tui.app.GatewayWsClient",
+        MagicMock(return_value=mock_ws_client),
     )
     monkeypatch.setattr(
         "openclaw_tui.app.build_tree",

@@ -12,11 +12,30 @@ class ParsedInput:
 
 COMMANDS = {
     "help": "Show available commands",
-    "status": "Show session status",
+    "commands": "List slash commands",
+    "status": "Show gateway status",
+    "agent": "Switch agent (or list when omitted)",
+    "agents": "List agents",
+    "session": "Switch session (or list when omitted)",
+    "sessions": "List sessions",
+    "model": "Set model (or list when omitted)",
+    "models": "List models",
+    "think": "Set thinking level",
+    "verbose": "Set verbose on/off",
+    "reasoning": "Set reasoning on/off",
+    "usage": "Set usage footer mode",
+    "elevated": "Set elevated mode",
+    "elev": "Alias for /elevated",
+    "activation": "Set activation mode",
+    "new": "Reset current session",
+    "reset": "Reset current session",
+    "settings": "Open settings",
     "abort": "Abort active run",
-    "back": "Return to transcript view",
+    "back": "Return to transcript mode",
     "history": "Reload message history [n]",
     "clear": "Clear chat display",
+    "exit": "Exit the app",
+    "quit": "Exit the app",
 }
 
 
@@ -66,20 +85,17 @@ def format_help() -> str:
         return f"  [bold #F5A623]/{name:<{width}}[/]  [#A8B5A2]{desc}[/]"
 
     lines = [
-        "[bold #F5A623]Chat Controls[/]",
+        "[bold #F5A623]Slash Commands[/]",
         "[dim #7B7F87]────────────────────────────────[/]",
-        row("help", COMMANDS["help"]),
-        row("status", COMMANDS["status"]),
-        row("history", COMMANDS["history"]),
-        "",
-        "[bold #F5A623]Session Actions[/]",
-        "[dim #7B7F87]────────────────────────────────[/]",
-        row("abort", COMMANDS["abort"]),
-        row("clear", COMMANDS["clear"]),
-        row("back", COMMANDS["back"]),
-        "",
-        "[bold #F5A623]Shell[/]",
-        "[dim #7B7F87]────────────────────────────────[/]",
-        "  [bold #C67B5C]!<command>[/]  [#A8B5A2]Run a local shell command[/]",
     ]
+    for name, description in COMMANDS.items():
+        lines.append(row(name, description))
+    lines.extend(
+        [
+            "",
+            "[bold #F5A623]Shell[/]",
+            "[dim #7B7F87]────────────────────────────────[/]",
+            "  [bold #C67B5C]!<command>[/]  [#A8B5A2]Run a local shell command[/]",
+        ]
+    )
     return "\n".join(lines)
