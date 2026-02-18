@@ -1,14 +1,14 @@
 """Tests for AgentDashboard app (smoke tests + composition)."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from textual.widgets import Header, Footer
 
 from openclaw_tui.app import AgentDashboard
+from openclaw_tui.models import TreeNodeData
 from openclaw_tui.widgets import AgentTreeWidget, SummaryBar
-from openclaw_tui.client import GatewayError
 
 
 # ---------------------------------------------------------------------------
@@ -30,6 +30,7 @@ def _mock_gateway(monkeypatch):
     )
     mock_client = MagicMock()
     mock_client.fetch_sessions.return_value = []
+    mock_client.fetch_tree.return_value = []
     mock_client.close.return_value = None
     monkeypatch.setattr(
         "openclaw_tui.app.GatewayClient",
@@ -107,3 +108,59 @@ async def test_app_summary_bar_initial_text() -> None:
         bar = app.query_one(SummaryBar)
         # Initial state before any poll completes, or after first empty poll
         assert hasattr(bar, '_display_text')
+
+
+@pytest.mark.asyncio
+async def test_poll_uses_tree_stats_without_summary_flicker() -> None:
+    """When tree stats are available, poll should render the summary bar once."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        bar = app.query_one(SummaryBar)
+        bar.update_summary = MagicMock()
+        bar.update_with_tree_stats = MagicMock()
+
+        app._client.fetch_sessions.return_value = []
+        app._client.fetch_tree.return_value = [
+            TreeNodeData(
+                key="root",
+                label="root",
+                depth=0,
+                status="active",
+                runtime_ms=1000,
+                children=[
+                    TreeNodeData(
+                        key="child",
+                        label="child",
+                        depth=1,
+                        status="completed",
+                        runtime_ms=500,
+                        children=[],
+                    )
+                ],
+            )
+        ]
+
+        await app._poll_sessions()
+        await pilot.pause()
+
+        bar.update_with_tree_stats.assert_called_once_with(active=1, completed=1, total=2)
+        bar.update_summary.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_poll_falls_back_to_summary_when_tree_stats_missing() -> None:
+    """If tree stats are unavailable, poll should still update summary once."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        bar = app.query_one(SummaryBar)
+        bar.update_summary = MagicMock()
+        bar.update_with_tree_stats = MagicMock()
+
+        app._client.fetch_sessions.return_value = []
+        app._client.fetch_tree.return_value = []
+
+        await app._poll_sessions()
+        await pilot.pause()
+
+        bar.update_summary.assert_called_once()
+        bar.update_with_tree_stats.assert_not_called()

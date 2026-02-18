@@ -232,7 +232,7 @@ class TestFetchSessions:
 
         body = captured_bodies[0]
         assert body["tool"] == "sessions_list"
-        assert body["input"]["activeMinutes"] == 720
+        assert body["args"]["activeMinutes"] == 720
 
 
 class TestGatewayClientClose:

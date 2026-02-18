@@ -150,7 +150,6 @@ Footer {
             tree = self.query_one(AgentTreeWidget)
             bar = self.query_one(SummaryBar)
             tree.update_tree(nodes, now_ms)
-            bar.update_summary(nodes, now_ms)
             try:
                 tree_nodes = await asyncio.to_thread(self._client.fetch_tree)
                 if tree_nodes:
@@ -167,8 +166,11 @@ Footer {
                             completed += 1
                         stack.extend(tree_node.children)
                     bar.update_with_tree_stats(active=active, completed=completed, total=total)
+                else:
+                    bar.update_summary(nodes, now_ms)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Tree stats update skipped: %s", exc)
+                bar.update_summary(nodes, now_ms)
             logger.info("Poll OK — %d sessions across %d agents", len(sessions), len(nodes))
         except (GatewayError, ConnectionError) as exc:
             logger.warning("Gateway poll failed: %s", exc)

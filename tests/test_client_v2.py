@@ -271,7 +271,7 @@ class TestFetchTree:
         client.fetch_tree(depth=10)
 
         body = captured_bodies[0]
-        assert body["input"]["depth"] == 10
+        assert body["args"]["depth"] == 10
 
     def test_fetch_tree_deep_nesting(self):
         transport = make_mock_transport(TREE_RESPONSE_DEEP)

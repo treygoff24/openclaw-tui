@@ -131,7 +131,7 @@ class GatewayClient:
         """Fetch sessions from gateway.
 
         POST /tools/invoke with body:
-        {"tool": "sessions_list", "input": {"activeMinutes": active_minutes}}
+        {"tool": "sessions_list", "args": {"activeMinutes": active_minutes}}
 
         Maps camelCase JSON fields to snake_case SessionInfo fields.
 
@@ -142,7 +142,7 @@ class GatewayClient:
         client = self._get_client()
         payload = {
             "tool": "sessions_list",
-            "input": {"activeMinutes": active_minutes},
+            "args": {"activeMinutes": active_minutes},
         }
 
         try:
@@ -203,7 +203,7 @@ class GatewayClient:
         Never raises.
         """
         client = self._get_client()
-        payload = {"tool": "sessions_tree", "input": {"depth": depth}}
+        payload = {"tool": "sessions_tree", "args": {"depth": depth}}
 
         try:
             response = client.post("/tools/invoke", json=payload)
@@ -231,7 +231,7 @@ class GatewayClient:
         """Send a message to a session.
 
         POST /tools/invoke with body:
-        {"tool": "sessions_send", "input": {"sessionKey": key, "message": msg}}
+        {"tool": "sessions_send", "args": {"sessionKey": key, "message": msg}}
 
         Raises ConnectionError if gateway unreachable.
         Raises AuthError if 401/403.
@@ -240,7 +240,7 @@ class GatewayClient:
         client = self._get_client()
         payload = {
             "tool": "sessions_send",
-            "input": {"sessionKey": session_key, "message": message},
+            "args": {"sessionKey": session_key, "message": message},
         }
 
         try:
@@ -269,7 +269,7 @@ class GatewayClient:
         """Fetch message history for a session.
 
         POST /tools/invoke with body:
-        {"tool": "sessions_history", "input": {"sessionKey": key, "limit": limit}}
+        {"tool": "sessions_history", "args": {"sessionKey": key, "limit": limit}}
 
         Returns empty list on any error (connection, auth, parse).
         Sets ``last_history_error`` with details when available.
@@ -279,8 +279,8 @@ class GatewayClient:
         self._last_history_error = None
 
         payloads = [
-            {"tool": "sessions_history", "input": {"sessionKey": session_key, "limit": limit}},
-            {"tool": "sessions_history", "input": {"session_key": session_key, "limit": limit}},
+            {"tool": "sessions_history", "args": {"sessionKey": session_key, "limit": limit}},
+            {"tool": "sessions_history", "args": {"session_key": session_key, "limit": limit}},
         ]
 
         errors: list[str] = []
@@ -347,7 +347,7 @@ class GatewayClient:
         """Abort an active session run.
 
         POST /tools/invoke with body:
-        {"tool": "sessions_kill", "input": {"sessionKey": key}}
+        {"tool": "sessions_kill", "args": {"sessionKey": key}}
 
         Raises ConnectionError if gateway unreachable.
         Raises AuthError if 401/403.
@@ -356,7 +356,7 @@ class GatewayClient:
         client = self._get_client()
         payload = {
             "tool": "sessions_kill",
-            "input": {"sessionKey": session_key},
+            "args": {"sessionKey": session_key},
         }
 
         try:

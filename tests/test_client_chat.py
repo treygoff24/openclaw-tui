@@ -129,8 +129,8 @@ class TestSendMessage:
 
         body = captured_bodies[0]
         assert body["tool"] == "sessions_send"
-        assert body["input"]["sessionKey"] == "agent:minimax:subagent:abc123"
-        assert body["input"]["message"] == "Test message"
+        assert body["args"]["sessionKey"] == "agent:minimax:subagent:abc123"
+        assert body["args"]["message"] == "Test message"
 
     def test_send_message_raises_auth_error_on_401(self):
         transport = make_mock_transport({"error": "unauthorized"}, status_code=401)
@@ -206,8 +206,8 @@ class TestFetchHistory:
 
         body = captured_bodies[0]
         assert body["tool"] == "sessions_history"
-        assert body["input"]["sessionKey"] == "agent:main:main"
-        assert body["input"]["limit"] == 10
+        assert body["args"]["sessionKey"] == "agent:main:main"
+        assert body["args"]["limit"] == 10
 
     def test_fetch_history_default_limit(self):
         captured_bodies = []
@@ -227,7 +227,7 @@ class TestFetchHistory:
         client.fetch_history("agent:main:main")
 
         body = captured_bodies[0]
-        assert body["input"]["limit"] == 30
+        assert body["args"]["limit"] == 30
 
     def test_fetch_history_returns_empty_list_on_connection_error(self):
         transport = make_error_transport(httpx.ConnectError("Connection refused"))
@@ -303,8 +303,8 @@ class TestFetchHistory:
         result = client.fetch_history("agent:main:main")
 
         assert len(result) == 3
-        assert captured_bodies[0]["input"]["sessionKey"] == "agent:main:main"
-        assert captured_bodies[1]["input"]["session_key"] == "agent:main:main"
+        assert captured_bodies[0]["args"]["sessionKey"] == "agent:main:main"
+        assert captured_bodies[1]["args"]["session_key"] == "agent:main:main"
         assert client.last_history_error is None
 
     def test_fetch_history_sets_descriptive_error(self):
@@ -359,7 +359,7 @@ class TestAbortSession:
 
         body = captured_bodies[0]
         assert body["tool"] == "sessions_kill"
-        assert body["input"]["sessionKey"] == "agent:minimax:subagent:xyz789"
+        assert body["args"]["sessionKey"] == "agent:minimax:subagent:xyz789"
 
     def test_abort_session_raises_auth_error_on_401(self):
         transport = make_mock_transport({"error": "unauthorized"}, status_code=401)
