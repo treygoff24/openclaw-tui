@@ -60,6 +60,28 @@ def _extract_error_text(data: object) -> str | None:
     return None
 
 
+def _summarize_message(message: str, max_chars: int = 120) -> str:
+    """Return a compact single-line message snippet for error context."""
+    compact = " ".join(message.split())
+    if not compact:
+        return "<empty>"
+    if len(compact) <= max_chars:
+        return compact
+    return f"{compact[: max_chars - 3]}..."
+
+
+def _extract_response_error_detail(response: httpx.Response, data: object) -> str | None:
+    """Extract best available human-readable error detail from response."""
+    message = _extract_error_text(data)
+    if message:
+        return message
+
+    text = response.text.strip()
+    if text:
+        return text[:300]
+    return None
+
+
 def _extract_history_messages(data: object) -> list[dict]:
     """Extract a messages list from known gateway response shapes."""
     if not isinstance(data, dict):
@@ -238,32 +260,64 @@ class GatewayClient:
         Returns the full result dict on success.
         """
         client = self._get_client()
-        payload = {
-            "tool": "sessions_send",
-            "args": {"sessionKey": session_key, "message": message},
-        }
+        payloads = [
+            {"tool": "sessions_send", "args": {"sessionKey": session_key, "message": message}},
+            {"tool": "sessions_send", "args": {"session_key": session_key, "message": message}},
+        ]
+        fallback_statuses = {400, 404, 422}
+        errors: list[str] = []
 
-        try:
-            response = client.post("/tools/invoke", json=payload)
-        except httpx.ConnectError as exc:
-            logger.warning("Gateway connection failed: %s", exc)
-            raise ConnectionError(f"Cannot reach gateway at {self.config.base_url}: {exc}") from exc
-        except httpx.TimeoutException as exc:
-            logger.warning("Gateway request timed out: %s", exc)
-            raise ConnectionError(f"Gateway request timed out: {exc}") from exc
-        except httpx.RequestError as exc:
-            logger.warning("Gateway request error: %s", exc)
-            raise ConnectionError(f"Gateway request error: {exc}") from exc
+        for index, payload in enumerate(payloads):
+            try:
+                response = client.post("/tools/invoke", json=payload)
+            except httpx.ConnectError as exc:
+                logger.warning("Gateway connection failed: %s", exc)
+                raise ConnectionError(f"Cannot reach gateway at {self.config.base_url}: {exc}") from exc
+            except httpx.TimeoutException as exc:
+                logger.warning("Gateway request timed out: %s", exc)
+                raise ConnectionError(f"Gateway request timed out: {exc}") from exc
+            except httpx.RequestError as exc:
+                logger.warning("Gateway request error: %s", exc)
+                raise ConnectionError(f"Gateway request error: {exc}") from exc
 
-        if response.status_code in (401, 403):
-            logger.warning("Gateway auth failed: HTTP %d", response.status_code)
-            raise AuthError(f"Authentication failed: HTTP {response.status_code}")
+            if response.status_code in (401, 403):
+                logger.warning("Gateway auth failed: HTTP %d", response.status_code)
+                raise AuthError(f"Authentication failed: HTTP {response.status_code}")
 
-        if response.status_code != 200:
-            logger.warning("Unexpected gateway status %d", response.status_code)
-            raise GatewayError(f"Unexpected status code: {response.status_code}")
+            data: object = None
+            try:
+                data = response.json()
+            except ValueError:
+                data = None
 
-        return response.json()
+            if response.status_code != 200:
+                message_context = _summarize_message(message)
+                detail = (
+                    f"Gateway returned HTTP {response.status_code} while sending "
+                    f"to session '{session_key}' with message '{message_context}'"
+                )
+                response_detail = _extract_response_error_detail(response, data)
+                if response_detail:
+                    detail = f"{detail}: {response_detail}"
+                errors.append(detail)
+
+                if index == 0 and response.status_code in fallback_statuses:
+                    continue
+
+                logger.warning("send_message failed: %s", detail)
+                raise GatewayError("; ".join(errors))
+
+            if data is None:
+                detail = (
+                    f"Gateway returned invalid JSON while sending "
+                    f"to session '{session_key}'"
+                )
+                logger.warning("send_message invalid JSON response")
+                raise GatewayError(detail)
+
+            return data
+
+        raise GatewayError("; ".join(errors) or "Unable to send message")
 
     def fetch_history(self, session_key: str, limit: int = 30) -> list[dict]:
         """Fetch message history for a session.

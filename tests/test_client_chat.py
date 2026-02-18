@@ -168,6 +168,55 @@ class TestSendMessage:
         with pytest.raises(ConnectionError):
             client.send_message("agent:main:main", "Hello")
 
+    def test_send_message_retries_with_snake_case_session_key_on_404(self):
+        captured_bodies = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            captured_bodies.append(body)
+            if len(captured_bodies) == 1:
+                return httpx.Response(
+                    404,
+                    json={"error": "Session not found for session_key"},
+                )
+            return httpx.Response(200, json=SEND_MESSAGE_RESPONSE)
+
+        transport = httpx.MockTransport(handler)
+        config = make_config()
+        client = GatewayClient(config)
+        client._client = httpx.Client(
+            base_url=config.base_url,
+            transport=transport,
+        )
+
+        result = client.send_message("agent:main:main", "hello from retry")
+
+        assert result["ok"] is True
+        assert captured_bodies[0]["args"]["sessionKey"] == "agent:main:main"
+        assert captured_bodies[1]["args"]["session_key"] == "agent:main:main"
+        assert captured_bodies[1]["args"]["message"] == "hello from retry"
+
+    def test_send_message_includes_context_and_error_detail_on_non_200(self):
+        transport = make_mock_transport(
+            {"result": {"details": {"error": "session is archived"}}},
+            status_code=500,
+        )
+        config = make_config()
+        client = GatewayClient(config)
+        client._client = httpx.Client(
+            base_url=config.base_url,
+            transport=transport,
+        )
+
+        with pytest.raises(GatewayError) as exc_info:
+            client.send_message("agent:main:archived", "please respond quickly")
+
+        err = str(exc_info.value)
+        assert "Gateway returned HTTP 500" in err
+        assert "session 'agent:main:archived'" in err
+        assert "message 'please respond quickly'" in err
+        assert "session is archived" in err
+
 
 class TestFetchHistory:
     def test_fetch_history_success(self):

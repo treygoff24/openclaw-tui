@@ -1,13 +1,14 @@
 """E6: App integration tests for chat mode."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from textual import events
 
 from openclaw_tui.app import AgentDashboard
 from openclaw_tui.widgets import AgentTreeWidget, ChatPanel, LogPanel
-from openclaw_tui.models import SessionInfo
+from openclaw_tui.models import ChatMessage, SessionInfo
 
 
 def _mock_load_config():
@@ -284,3 +285,72 @@ async def test_history_load_error_is_shown_with_details() -> None:
         status = app.query_one("#chat-status")
         rendered = str(status.content).lower()
         assert "invalid session key" in rendered
+
+
+@pytest.mark.asyncio
+async def test_paste_event_in_chat_mode_inserts_into_input() -> None:
+    """App-level paste events should route text into chat input in chat mode."""
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        app._client.fetch_history.return_value = []
+        session = _make_session()
+        app._enter_chat_mode_for_session(session)
+        await pilot.pause()
+
+        tree = app.query_one(AgentTreeWidget)
+        tree.focus()
+        await pilot.pause()
+
+        app.on_paste(events.Paste("hello from paste"))
+
+        input_widget = app.query_one("#chat-input")
+        assert input_widget.value == "hello from paste"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_v_fallback_reads_clipboard_and_inserts() -> None:
+    """Ctrl+V should fall back to clipboard read and insert text when needed."""
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        app._client.fetch_history.return_value = []
+        session = _make_session()
+        app._enter_chat_mode_for_session(session)
+        await pilot.pause()
+
+        tree = app.query_one(AgentTreeWidget)
+        tree.focus()
+        await pilot.pause()
+
+        with patch("openclaw_tui.app.read_from_clipboard", return_value="from clipboard"):
+            app.on_key(events.Key("ctrl+v", None))
+
+        input_widget = app.query_one("#chat-input")
+        assert input_widget.value == "from clipboard"
+
+
+@pytest.mark.asyncio
+async def test_action_copy_info_copies_chat_transcript_when_in_chat_mode() -> None:
+    """Copy action should copy rendered chat transcript while chat mode is active."""
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        app._client.fetch_history.return_value = []
+        session = _make_session()
+        app._enter_chat_mode_for_session(session)
+        await pilot.pause()
+
+        assert app._chat_state is not None
+        app._chat_state.messages = [
+            ChatMessage(role="user", content="hello", timestamp="10:00"),
+            ChatMessage(role="assistant", content="hi", timestamp="10:01"),
+        ]
+        app._chat_state.last_message_count = 2
+
+        with patch("openclaw_tui.app.copy_to_clipboard", return_value=True) as mock_copy:
+            app.action_copy_info()
+
+        copied_text = mock_copy.call_args[0][0]
+        assert "[10:00] user: hello" in copied_text
+        assert "[10:01] assistant: hi" in copied_text

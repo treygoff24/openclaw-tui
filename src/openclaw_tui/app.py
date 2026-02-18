@@ -22,7 +22,7 @@ from .config import load_config
 from .models import ChatMessage, SessionInfo
 from .tree import build_tree
 from .transcript import read_transcript
-from .utils.clipboard import copy_to_clipboard
+from .utils.clipboard import copy_to_clipboard, read_from_clipboard
 from .widgets import AgentTreeWidget, ChatPanel, LogPanel, SummaryBar
 from . import transcript
 
@@ -665,6 +665,35 @@ Footer {
             group="chat_send",
         )
 
+    def _chat_input_widget(self):
+        """Return the chat input widget if mounted, else None."""
+        try:
+            return self.query_one("#chat-input")
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _insert_text_into_chat_input(self, text: str) -> bool:
+        """Insert text at chat input cursor and focus the input."""
+        if not self._chat_mode or not text:
+            return False
+        input_widget = self._chat_input_widget()
+        if input_widget is None:
+            return False
+        input_widget.focus()
+        try:
+            input_widget.insert_text_at_cursor(text)
+        except Exception:  # noqa: BLE001
+            current = getattr(input_widget, "value", "")
+            input_widget.value = f"{current}{text}"
+        return True
+
+    def _paste_from_system_clipboard(self) -> bool:
+        """Fallback paste path for terminals without bracketed paste support."""
+        text = read_from_clipboard()
+        if text is None:
+            return False
+        return self._insert_text_into_chat_input(text)
+
     def on_chat_panel_submit(self, event: ChatPanel.Submit) -> None:
         """Handle chat input submission (commands, shell, or regular message)."""
         if not self._chat_mode or self._chat_state is None:
@@ -684,6 +713,13 @@ Footer {
 
         self._send_user_chat_message(text)
 
+    def on_paste(self, event: events.Paste) -> None:
+        """Route pasted text into chat input while in chat mode."""
+        if not self._chat_mode or not event.text:
+            return
+        if self._insert_text_into_chat_input(event.text):
+            event.stop()
+
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """Enter or switch chat mode when selecting a session node."""
         node_data = event.node.data  # This is the SessionInfo object (set in AgentTreeWidget)
@@ -702,29 +738,43 @@ Footer {
         self._enter_chat_mode_for_session(node_data)
 
     def action_copy_info(self) -> None:
-        """Copy selected session info to clipboard."""
+        """Copy chat transcript (in chat mode) or selected session info to clipboard."""
         session = getattr(self, "_selected_session", None)
         if session is None:
             self.notify("No session selected", severity="warning")
             return
-        info_lines = [
-            f"Agent: {session.agent_id}",
-            f"Session: {session.key}",
-            f"Name: {session.label or session.display_name}",
-            f"Model: {session.model}",
-            f"Tokens: {session.total_tokens}",
-            f"Session ID: {session.session_id}",
-        ]
-        info_text = "\n".join(info_lines)
+
+        if self._chat_mode and self._chat_state is not None and self._chat_state.messages:
+            transcript_lines: list[str] = []
+            for msg in self._chat_state.messages:
+                role = msg.role
+                if msg.tool_name:
+                    role = f"{role} ({msg.tool_name})"
+                transcript_lines.append(f"[{msg.timestamp}] {role}: {msg.content}")
+            copy_text = "\n".join(transcript_lines)
+        else:
+            info_lines = [
+                f"Agent: {session.agent_id}",
+                f"Session: {session.key}",
+                f"Name: {session.label or session.display_name}",
+                f"Model: {session.model}",
+                f"Tokens: {session.total_tokens}",
+                f"Session ID: {session.session_id}",
+            ]
+            copy_text = "\n".join(info_lines)
+
         try:
-            copied = copy_to_clipboard(info_text)
+            copied = copy_to_clipboard(copy_text)
         except Exception:  # noqa: BLE001
             copied = False
 
         if copied:
-            self.notify(f"Copied: {session.label or session.display_name}")
+            if self._chat_mode and self._chat_state is not None and self._chat_state.messages:
+                self.notify("Copied chat transcript")
+            else:
+                self.notify(f"Copied: {session.label or session.display_name}")
         else:
-            self.notify("Failed to copy session info to clipboard", severity="error")
+            self.notify("Failed to copy to clipboard", severity="error")
 
     def action_toggle_logs(self) -> None:
         """Toggle right panel visibility. Tree expands to full width when hidden."""
@@ -750,10 +800,18 @@ Footer {
 
     def on_key(self, event: events.Key) -> None:
         """Escape in chat mode exits back to transcript if input is empty."""
+        if self._chat_mode and event.key in {"ctrl+v", "shift+insert"}:
+            if self._paste_from_system_clipboard():
+                event.prevent_default()
+                event.stop()
+                return
+
         if event.key != "escape" or not self._chat_mode:
             return
 
-        input_widget = self.query_one("#chat-input")
+        input_widget = self._chat_input_widget()
+        if input_widget is None:
+            return
         if getattr(input_widget, "value", "").strip():
             return
 
