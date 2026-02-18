@@ -122,3 +122,41 @@ async def test_gap_callback_receives_expected_and_received_seq() -> None:
 
     assert gaps == [{"expected": 6, "received": 7}]
     await client.stop()
+
+
+@pytest.mark.asyncio
+async def test_connect_challenge_does_not_send_fake_device_identity() -> None:
+    ws = _FakeWebSocket()
+
+    async def connector(_url: str) -> _FakeWebSocket:
+        return ws
+
+    client = GatewayWsClient(
+        url="ws://127.0.0.1:2020",
+        connect_delay_s=1.0,
+        request_timeout_ms=200,
+        connector=connector,
+    )
+    await client.start()
+    await ws.push({"type": "event", "event": "connect.challenge", "payload": {"nonce": "abc"}})
+
+    for _ in range(20):
+        if ws.sent_frames:
+            break
+        await asyncio.sleep(0.01)
+    assert ws.sent_frames, "connect frame was not sent after challenge"
+
+    connect_req = ws.sent_frames[-1]
+    assert connect_req["method"] == "connect"
+    assert "device" not in connect_req["params"]
+
+    await ws.push(
+        {
+            "type": "res",
+            "id": connect_req["id"],
+            "ok": True,
+            "payload": {"type": "hello-ok", "protocol": 3},
+        }
+    )
+    await client.wait_ready(timeout_ms=500)
+    await client.stop()

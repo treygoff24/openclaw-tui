@@ -269,18 +269,7 @@ class GatewayWsClient:
             "auth": auth,
             "role": "operator",
             "scopes": ["operator.admin"],
-            "device": None,
         }
-        if self._connect_nonce:
-            params["device"] = {
-                "id": "openclaw-tui-device",
-                "publicKey": "openclaw-tui-public-key",
-                "signature": "openclaw-tui-signature",
-                "signedAt": int(asyncio.get_running_loop().time() * 1000),
-                "nonce": self._connect_nonce,
-            }
-        else:
-            params.pop("device", None)
 
         hello = await self.request("connect", params)
         if isinstance(hello, dict):
