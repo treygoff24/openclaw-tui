@@ -331,6 +331,28 @@ async def test_ctrl_v_fallback_reads_clipboard_and_inserts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_meta_v_fallback_reads_clipboard_and_inserts() -> None:
+    """Cmd+V on macOS should fall back to clipboard read and insert text."""
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        app._client.fetch_history.return_value = []
+        session = _make_session()
+        app._enter_chat_mode_for_session(session)
+        await pilot.pause()
+
+        tree = app.query_one(AgentTreeWidget)
+        tree.focus()
+        await pilot.pause()
+
+        with patch("openclaw_tui.app.read_from_clipboard", return_value="from meta clipboard"):
+            app.on_key(events.Key("meta+v", None))
+
+        input_widget = app.query_one("#chat-input")
+        assert input_widget.value == "from meta clipboard"
+
+
+@pytest.mark.asyncio
 async def test_action_copy_info_copies_chat_transcript_when_in_chat_mode() -> None:
     """Copy action should copy rendered chat transcript while chat mode is active."""
     app = AgentDashboard()

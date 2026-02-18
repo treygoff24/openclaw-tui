@@ -800,11 +800,17 @@ Footer {
 
     def on_key(self, event: events.Key) -> None:
         """Escape in chat mode exits back to transcript if input is empty."""
-        if self._chat_mode and event.key in {"ctrl+v", "shift+insert"}:
+        if self._chat_mode and event.key in {"ctrl+v", "meta+v", "shift+insert"}:
             if self._paste_from_system_clipboard():
                 event.prevent_default()
                 event.stop()
                 return
+
+        if event.key in {"ctrl+c", "meta+c"}:
+            self.action_copy_info()
+            event.prevent_default()
+            event.stop()
+            return
 
         if event.key != "escape" or not self._chat_mode:
             return

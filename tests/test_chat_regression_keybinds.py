@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch, AsyncMock
 
 import pytest
+from textual import events
 
 from openclaw_tui.app import AgentDashboard
 from openclaw_tui.widgets import AgentTreeWidget, ChatPanel, LogPanel
@@ -220,3 +221,14 @@ async def test_bindings_are_registered() -> None:
     assert "c" in binding_keys  # copy_info
     assert "v" in binding_keys  # toggle_logs
     assert "e" in binding_keys  # expand_all
+
+
+@pytest.mark.asyncio
+async def test_meta_c_key_event_triggers_copy_action() -> None:
+    """meta+c should trigger copy action and not crash."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        app._selected_session = _make_session()
+        with patch.object(app, "action_copy_info") as mock_copy:
+            app.on_key(events.Key("meta+c", None))
+        mock_copy.assert_called_once()
