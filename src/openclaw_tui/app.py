@@ -1252,7 +1252,14 @@ Footer {
 
     def on_paste(self, event: events.Paste) -> None:
         """Route pasted text into chat input while in chat mode."""
-        if not self._chat_mode or not event.text:
+        if not self._chat_mode:
+            return
+        # Some terminals emit paste events (not key events) for Cmd/Ctrl+V.
+        # Try image staging first so clipboard images work in that path too.
+        if self._paste_image_from_system_clipboard():
+            event.stop()
+            return
+        if not event.text:
             return
         if self._insert_text_into_chat_input(event.text):
             event.stop()
