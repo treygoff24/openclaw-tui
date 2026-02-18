@@ -101,21 +101,37 @@ class AgentTreeWidget(Tree[SessionInfo]):
         self.show_root = False
         self.root.expand()
 
-    def update_tree(self, nodes: list[AgentNode], now_ms: int) -> None:
+    def update_tree(
+        self,
+        nodes: list[AgentNode],
+        now_ms: int,
+        *,
+        parent_by_key: dict[str, str] | None = None,
+        synthetic_sessions: dict[str, SessionInfo] | None = None,
+    ) -> None:
         """Rebuild tree from agent nodes. Preserves expansion state of agent groups.
 
         Args:
             nodes:  List of AgentNode objects to display.
             now_ms: Current time in milliseconds (used to compute session status).
+            parent_by_key: Optional session hierarchy map (child -> parent key).
+            synthetic_sessions: Optional synthetic SessionInfo entries not present in nodes.
         """
-        # Snapshot current expansion state keyed by agent_id label text
-        expanded: dict[str, bool] = {}
-        for child in self.root.children:
-            expanded[child.label.plain] = child.is_expanded
+        expanded = self._snapshot_expanded_nodes(self.root)
 
         self.clear()
         # Ensure root is expanded after clear (clear preserves the state, but be explicit)
         self.root.expand()
+
+        parent_by_key = parent_by_key or {}
+        synthetic_sessions = synthetic_sessions or {}
+
+        if not nodes and synthetic_sessions:
+            grouped_agents = sorted(
+                {session.agent_id for session in synthetic_sessions.values()},
+                key=lambda agent_id: (0, "") if agent_id == "main" else (1, agent_id),
+            )
+            nodes = [AgentNode(agent_id=agent_id, sessions=[]) for agent_id in grouped_agents]
 
         if not nodes:
             self.root.add_leaf("No sessions")
@@ -127,9 +143,47 @@ class AgentTreeWidget(Tree[SessionInfo]):
                 agent_node.agent_id,
                 expand=was_expanded,
             )
-            for session in agent_node.sessions:
+            by_key: dict[str, SessionInfo] = {session.key: session for session in agent_node.sessions}
+            for key, session in synthetic_sessions.items():
+                if session.agent_id == agent_node.agent_id and key not in by_key:
+                    by_key[key] = session
+
+            child_keys: dict[str, list[str]] = {}
+            for child_key, parent_key in parent_by_key.items():
+                if child_key in by_key and parent_key in by_key:
+                    child_keys.setdefault(parent_key, []).append(child_key)
+
+            position = {session.key: index for index, session in enumerate(agent_node.sessions)}
+            for key in synthetic_sessions:
+                position.setdefault(key, len(position) + 1000)
+
+            for siblings in child_keys.values():
+                siblings.sort(key=lambda key: position.get(key, 10_000))
+
+            roots = [
+                key
+                for key in by_key
+                if key not in parent_by_key or parent_by_key[key] not in by_key
+            ]
+            roots.sort(key=lambda key: position.get(key, 10_000))
+
+            def add_session_node(parent, session_key: str) -> None:
+                session = by_key[session_key]
                 label = _session_label(session, now_ms)
-                group.add_leaf(label, data=session)
+                children = child_keys.get(session_key, [])
+                if children:
+                    node = parent.add(
+                        label,
+                        data=session,
+                        expand=expanded.get(session.key, True),
+                    )
+                    for child_key in children:
+                        add_session_node(node, child_key)
+                else:
+                    parent.add_leaf(label, data=session)
+
+            for root_key in roots:
+                add_session_node(group, root_key)
 
     @staticmethod
     def _infer_channel_from_key(key: str) -> str:

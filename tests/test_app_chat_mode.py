@@ -292,7 +292,23 @@ async def test_selecting_nested_recursive_node_enters_chat_mode() -> None:
         await pilot.pause()
 
         tree = app.query_one(AgentTreeWidget)
-        nested = tree.root.children[0].children[0]
+        nested = None
+
+        def walk(node) -> None:
+            nonlocal nested
+            if nested is not None:
+                return
+            data = node.data
+            if isinstance(data, SessionInfo) and data.key == "agent:main:subagent:child":
+                nested = node
+                return
+            for child in node.children:
+                walk(child)
+
+        for root_child in tree.root.children:
+            walk(root_child)
+
+        assert nested is not None
         assert isinstance(nested.data, SessionInfo)
 
         class _NodeSelectedEvent:

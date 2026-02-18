@@ -236,11 +236,81 @@ async def test_poll_populates_recursive_tree_with_clickable_session_data() -> No
         await pilot.pause()
 
         tree = app.query_one(AgentTreeWidget)
-        first = tree.root.children[0]
+        group = tree.root.children[0]
+        first = group.children[0]
         second = first.children[0]
         third = second.children[0]
+        assert group.data is None
         assert isinstance(first.data, SessionInfo)
         assert isinstance(second.data, SessionInfo)
         assert isinstance(third.data, SessionInfo)
         assert second.data.key == "agent:main:subagent:child"
         assert third.data.key == "agent:main:subagent:grandchild"
+
+
+@pytest.mark.asyncio
+async def test_poll_keeps_sessions_visible_when_tree_data_is_partial() -> None:
+    """Tree rendering should not collapse to only partial sessions_tree nodes."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        app._client.fetch_sessions.return_value = [
+            SessionInfo(
+                key="agent:main:main",
+                kind="chat",
+                channel="webchat",
+                display_name="Main",
+                label="Main",
+                updated_at=1700000000000,
+                session_id="session-main",
+                model="claude-sonnet-4-20250514",
+                context_tokens=1000,
+                total_tokens=2000,
+                aborted_last_run=False,
+            ),
+            SessionInfo(
+                key="agent:main:discord:channel:123",
+                kind="chat",
+                channel="discord",
+                display_name="Discord",
+                label="Discord",
+                updated_at=1700000000000,
+                session_id="session-discord",
+                model="claude-sonnet-4-20250514",
+                context_tokens=1000,
+                total_tokens=3000,
+                aborted_last_run=False,
+            ),
+        ]
+        # Partial tree data only includes one subagent node.
+        app._client.fetch_tree.return_value = [
+            TreeNodeData(
+                key="agent:main:subagent:child",
+                label="Child",
+                depth=1,
+                status="completed",
+                runtime_ms=250,
+                children=[],
+            )
+        ]
+
+        await app._poll_sessions()
+        await pilot.pause()
+
+        tree = app.query_one(AgentTreeWidget)
+        main_group = tree.root.children[0]
+
+        session_keys: set[str] = set()
+
+        def collect(node) -> None:
+            data = node.data
+            if isinstance(data, SessionInfo):
+                session_keys.add(data.key)
+            for child in node.children:
+                collect(child)
+
+        for child in main_group.children:
+            collect(child)
+
+        assert "agent:main:main" in session_keys
+        assert "agent:main:discord:channel:123" in session_keys
+        assert "agent:main:subagent:child" in session_keys

@@ -24,7 +24,7 @@ from .chat.runtime_types import CommandResult, RunTrackingState
 from .client import GatewayClient, GatewayError
 from .config import load_config
 from .gateway import GatewayWsClient
-from .models import ChatMessage, SessionInfo
+from .models import AgentNode, ChatMessage, SessionInfo, TreeNodeData
 from .tree import build_tree
 from .transcript import read_transcript
 from .utils.clipboard import copy_to_clipboard, read_from_clipboard
@@ -260,16 +260,25 @@ Footer {
         try:
             sessions = await asyncio.to_thread(self._client.fetch_sessions)
             nodes = build_tree(sessions)
+            if sessions and not nodes:
+                nodes = self._group_sessions_fallback(sessions)
             session_lookup = {session.key: session for session in sessions}
             tree = self.query_one(AgentTreeWidget)
             bar = self.query_one(SummaryBar)
             try:
                 tree_nodes = await asyncio.to_thread(self._client.fetch_tree)
                 if tree_nodes:
-                    tree.update_tree_from_nodes(
-                        tree_nodes,
+                    parent_by_key, keyed_tree_nodes = self._collect_tree_relationships(tree_nodes)
+                    synthetic_sessions = {
+                        key: AgentTreeWidget._synthesize_session(node_data, now_ms)
+                        for key, node_data in keyed_tree_nodes.items()
+                        if key not in session_lookup
+                    }
+                    tree.update_tree(
+                        nodes,
                         now_ms,
-                        session_lookup=session_lookup,
+                        parent_by_key=parent_by_key,
+                        synthetic_sessions=synthetic_sessions,
                     )
                     active = 0
                     completed = 0
@@ -306,6 +315,40 @@ Footer {
             bar.set_error(message)
         except Exception as exc:  # noqa: BLE001
             logger.error("Could not update SummaryBar: %s", exc)
+
+    @staticmethod
+    def _collect_tree_relationships(
+        tree_nodes: list[TreeNodeData],
+    ) -> tuple[dict[str, str], dict[str, TreeNodeData]]:
+        parent_by_key: dict[str, str] = {}
+        keyed_tree_nodes: dict[str, TreeNodeData] = {}
+
+        def walk(node_data: TreeNodeData, parent_key: str | None) -> None:
+            key = str(node_data.key)
+            if key:
+                keyed_tree_nodes[key] = node_data
+                if parent_key and parent_key != key:
+                    parent_by_key[key] = parent_key
+                next_parent = key
+            else:
+                next_parent = parent_key
+            for child in node_data.children:
+                walk(child, next_parent)
+
+        for node in tree_nodes:
+            walk(node, None)
+        return parent_by_key, keyed_tree_nodes
+
+    @staticmethod
+    def _group_sessions_fallback(sessions: list[SessionInfo]) -> list[AgentNode]:
+        grouped: dict[str, list[SessionInfo]] = {}
+        for session in sessions:
+            grouped.setdefault(session.agent_id, []).append(session)
+        sorted_agent_ids = sorted(
+            grouped.keys(),
+            key=lambda agent_id: (0, "") if agent_id == "main" else (1, agent_id),
+        )
+        return [AgentNode(agent_id=agent_id, sessions=grouped[agent_id]) for agent_id in sorted_agent_ids]
 
     def _show_transcript_for_session(self, session: SessionInfo) -> None:
         """Load and display transcript for a session in LogPanel."""
@@ -1232,6 +1275,8 @@ Footer {
                     def _consume_shutdown_error(task: asyncio.Task[object]) -> None:
                         try:
                             task.result()
+                        except asyncio.CancelledError:
+                            return
                         except Exception:
                             logger.exception("Gateway websocket shutdown failed")
 
