@@ -197,6 +197,7 @@ class GatewayWsClient:
         *,
         session_key: str,
         message: str,
+        attachments: list[dict[str, str]] | None = None,
         thinking: str | None = None,
         deliver: bool = False,
         timeout_ms: int | None = None,
@@ -211,6 +212,8 @@ class GatewayWsClient:
             "timeoutMs": timeout_ms,
             "idempotencyKey": used_run_id,
         }
+        if attachments:
+            payload["attachments"] = attachments
         await self.request("chat.send", payload)
         return {"runId": used_run_id}
 

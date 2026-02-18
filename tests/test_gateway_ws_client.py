@@ -113,6 +113,40 @@ async def test_request_response_matching_resolves_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_chat_includes_inline_attachments_payload() -> None:
+    client, ws = await _ready_client()
+    send_task = asyncio.create_task(
+        client.send_chat(
+            session_key="agent:main:main",
+            message="what is in this image?",
+            attachments=[{"type": "image", "mimeType": "image/png", "content": "ZmFrZQ=="}],
+            run_id="run-inline-1",
+        )
+    )
+    await asyncio.sleep(0)
+    send_req = ws.sent_frames[-1]
+    await ws.push(
+        {
+            "type": "res",
+            "id": send_req["id"],
+            "ok": True,
+            "payload": {"ok": True},
+        }
+    )
+
+    result = await send_task
+
+    assert send_req["method"] == "chat.send"
+    assert send_req["params"]["sessionKey"] == "agent:main:main"
+    assert send_req["params"]["message"] == "what is in this image?"
+    assert send_req["params"]["attachments"] == [
+        {"type": "image", "mimeType": "image/png", "content": "ZmFrZQ=="}
+    ]
+    assert result["runId"] == "run-inline-1"
+    await client.stop()
+
+
+@pytest.mark.asyncio
 async def test_gap_callback_receives_expected_and_received_seq() -> None:
     client, ws = await _ready_client()
     gaps: list[dict[str, int]] = []

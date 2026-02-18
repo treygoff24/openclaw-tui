@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import datetime
 from functools import partial
 import inspect
 import logging
+import mimetypes
+from pathlib import Path
+import re
 import subprocess
 import time
 from uuid import uuid4
@@ -37,6 +41,18 @@ from .widgets import AgentTreeWidget, ChatPanel, LogPanel, NewSessionModal, Summ
 from . import transcript
 
 logger = logging.getLogger(__name__)
+
+_IMAGE_TOKEN_PATTERN = re.compile(r"(?P<path>(?:~|/)\S+)")
+_IMAGE_MIME_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+}
 
 
 class AgentDashboard(App[None]):
@@ -1135,6 +1151,7 @@ Footer {
         try:
             ws_client = await self._ensure_ws_client()
             run_id = str(uuid4())
+            outbound_message, attachments = self._extract_inline_image_attachments(message)
             if self._chat_state is not None:
                 self._chat_state.active_run_id = run_id
                 self._chat_state.local_run_ids.add(run_id)
@@ -1143,11 +1160,12 @@ Footer {
                 self._run_tracking.note_local_run(run_id)
             await ws_client.send_chat(
                 session_key=session_key,
-                message=message,
+                message=outbound_message,
                 thinking=self._chat_state.thinking_level if self._chat_state is not None else None,
                 deliver=False,
                 timeout_ms=30_000,
                 run_id=run_id,
+                attachments=attachments,
             )
         except ConnectionError as exc:
             logger.warning("send_message connection lost for %s: %s", session_key, exc)
@@ -1171,6 +1189,63 @@ Footer {
 
         self._chat_state.error = None
         self.query_one(ChatPanel).set_status("● waiting for response...")
+
+    @staticmethod
+    def _normalize_image_token_path(token: str) -> Path | None:
+        """Parse and normalize a candidate image path token."""
+        cleaned = token.strip().strip("'\"()[]{}<>,;")
+        if not cleaned or not (cleaned.startswith("/") or cleaned.startswith("~")):
+            return None
+        path = Path(cleaned).expanduser()
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            return None
+        if not resolved.is_file():
+            return None
+        if resolved.suffix.lower() not in _IMAGE_MIME_BY_SUFFIX:
+            return None
+        allowed_root = (Path.home() / ".openclaw" / "media").resolve()
+        try:
+            resolved.relative_to(allowed_root)
+        except ValueError:
+            return None
+        return resolved
+
+    def _extract_inline_image_attachments(self, message: str) -> tuple[str, list[dict[str, str]]]:
+        """Extract image file path tokens and convert them into inline attachments."""
+        attachments: list[dict[str, str]] = []
+        kept_tokens: list[str] = []
+
+        for raw_token in message.split():
+            match = _IMAGE_TOKEN_PATTERN.fullmatch(raw_token)
+            path_token = match.group("path") if match else raw_token
+            resolved = self._normalize_image_token_path(path_token)
+            if resolved is None:
+                kept_tokens.append(raw_token)
+                continue
+            try:
+                image_bytes = resolved.read_bytes()
+            except OSError:
+                kept_tokens.append(raw_token)
+                continue
+            guessed_mime = _IMAGE_MIME_BY_SUFFIX.get(resolved.suffix.lower()) or mimetypes.guess_type(
+                str(resolved)
+            )[0]
+            mime_type = guessed_mime or "image/png"
+            attachments.append(
+                {
+                    "type": "image",
+                    "mimeType": mime_type,
+                    "content": base64.b64encode(image_bytes).decode("ascii"),
+                }
+            )
+
+        cleaned_message = " ".join(kept_tokens).strip()
+        if attachments and not cleaned_message:
+            # Preserve compatibility if the user pasted only an image path.
+            cleaned_message = message
+        return cleaned_message or message, attachments
 
     def _send_user_chat_message(self, content: str) -> None:
         """Append local user message and dispatch send worker."""

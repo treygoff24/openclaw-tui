@@ -1,6 +1,7 @@
 """E6: App integration tests for chat mode."""
 from __future__ import annotations
 
+import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -80,6 +81,36 @@ def _make_session(agent_id: str = "test-agent", session_key: str = "agent:main:t
         aborted_last_run=False,
         transcript_path=None,
     )
+
+
+def test_extract_inline_image_attachments_builds_attachment_from_media_path(tmp_path, monkeypatch) -> None:
+    app = AgentDashboard()
+    monkeypatch.setattr("openclaw_tui.app.Path.home", lambda: tmp_path)
+    image_path = tmp_path / ".openclaw" / "media" / "clipboard" / "paste-test.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image_bytes = b"\x89PNG\r\n\x1a\nfakepng"
+    image_path.write_bytes(image_bytes)
+
+    message, attachments = app._extract_inline_image_attachments(f"{image_path} what is this")
+
+    assert message == "what is this"
+    assert len(attachments) == 1
+    assert attachments[0]["type"] == "image"
+    assert attachments[0]["mimeType"] == "image/png"
+    assert attachments[0]["content"] == base64.b64encode(image_bytes).decode("ascii")
+
+
+def test_extract_inline_image_attachments_ignores_paths_outside_media_dir(tmp_path, monkeypatch) -> None:
+    app = AgentDashboard()
+    monkeypatch.setattr("openclaw_tui.app.Path.home", lambda: tmp_path)
+    outside_path = tmp_path / ".cache" / "paste-test.png"
+    outside_path.parent.mkdir(parents=True, exist_ok=True)
+    outside_path.write_bytes(b"\x89PNG\r\n\x1a\noutside")
+
+    message, attachments = app._extract_inline_image_attachments(f"{outside_path} check this")
+
+    assert message == f"{outside_path} check this"
+    assert attachments == []
 
 
 @pytest.mark.asyncio
