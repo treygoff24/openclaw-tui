@@ -268,7 +268,7 @@ class GatewayWsClient:
             "caps": [TOOL_EVENTS_CAP],
             "auth": auth,
             "role": "operator",
-            "scopes": ["operator.admin"],
+            "scopes": ["operator.read", "operator.admin"],
         }
 
         hello = await self.request("connect", params)

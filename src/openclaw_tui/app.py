@@ -540,18 +540,39 @@ Footer {
         chat_panel = self.query_one(ChatPanel)
         chat_panel.set_status("● loading history...")
 
+        history: dict | None = None
+        ws_error: Exception | None = None
         try:
             ws_client = await self._ensure_ws_client()
             history = await ws_client.chat_history(session_key, limit=limit)
         except Exception as exc:  # noqa: BLE001
-            if self._chat_state is None or self._chat_state.session_key != session_key:
+            ws_error = exc
+
+        if history is None and ws_error is not None:
+            ws_error_text = str(ws_error).lower()
+            allow_rest_fallback = (
+                "missing scope: operator.read" in ws_error_text
+                or "chat websocket unavailable" in ws_error_text
+            )
+            if allow_rest_fallback:
+                try:
+                    raw_messages = await asyncio.to_thread(
+                        self._client.fetch_history,
+                        session_key,
+                        limit,
+                    )
+                    history = {"messages": raw_messages}
+                except Exception as exc:  # noqa: BLE001
+                    ws_error = exc
+            if history is None:
+                if self._chat_state is None or self._chat_state.session_key != session_key:
+                    return
+                detail = str(ws_error) or "Unknown error while loading history"
+                self._chat_state.error = detail
+                self._chat_state.is_busy = False
+                chat_panel.show_placeholder(f"Failed to load history: {detail}")
+                chat_panel.set_status(self._format_error_status(detail))
                 return
-            detail = str(exc) or "Unknown error while loading history"
-            self._chat_state.error = detail
-            self._chat_state.is_busy = False
-            chat_panel.show_placeholder(f"Failed to load history: {detail}")
-            chat_panel.set_status(self._format_error_status(detail))
-            return
 
         if self._chat_state is None or self._chat_state.session_key != session_key:
             return
