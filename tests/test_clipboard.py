@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import subprocess
 from unittest.mock import MagicMock, patch
+from pathlib import Path
 
-from openclaw_tui.utils.clipboard import copy_to_clipboard, read_from_clipboard
+from openclaw_tui.utils.clipboard import (
+    copy_to_clipboard,
+    read_from_clipboard,
+    read_image_to_temp_file_from_clipboard,
+)
 
 
 class TestCopyToClipboard:
@@ -135,4 +140,37 @@ class TestReadFromClipboard:
             subprocess.CalledProcessError(1, ["powershell.exe"]),
         ]
         result = read_from_clipboard()
+        assert result is None
+
+
+class TestReadImageFromClipboard:
+    @patch("openclaw_tui.utils.clipboard.sys")
+    @patch("openclaw_tui.utils.clipboard._write_clipboard_image")
+    @patch("openclaw_tui.utils.clipboard.subprocess.run")
+    def test_macos_pngpaste_is_used_for_image_clipboard(self, mock_run, mock_write, mock_sys):
+        mock_sys.platform = "darwin"
+        png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+        mock_run.return_value = MagicMock(returncode=0, stdout=png_data)
+        expected_path = Path("/tmp/paste-123.png")
+        mock_write.return_value = expected_path
+
+        result = read_image_to_temp_file_from_clipboard()
+
+        assert result == expected_path
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0] == ["pngpaste", "-"]
+        mock_write.assert_called_once()
+
+    @patch("openclaw_tui.utils.clipboard.sys")
+    @patch("openclaw_tui.utils.clipboard.subprocess.run")
+    def test_image_read_returns_none_when_no_commands_succeed(self, mock_run, mock_sys):
+        mock_sys.platform = "linux"
+        mock_run.side_effect = [
+            subprocess.CalledProcessError(1, ["wl-paste"]),
+            subprocess.CalledProcessError(1, ["xclip"]),
+            subprocess.CalledProcessError(1, ["xsel"]),
+        ]
+
+        result = read_image_to_temp_file_from_clipboard()
+
         assert result is None

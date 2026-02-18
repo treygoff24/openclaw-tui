@@ -41,8 +41,74 @@ COMMANDS = {
 }
 
 ALIASES = {
+    "elev": "elevated",
     "ns": "newsession",
 }
+
+COMMAND_USAGE = {
+    "help": "/help",
+    "commands": "/commands",
+    "status": "/status",
+    "agent": "/agent [agent-id]",
+    "agents": "/agents",
+    "session": "/session [session-key]",
+    "sessions": "/sessions",
+    "model": "/model [provider/model]",
+    "models": "/models",
+    "think": "/think <level>",
+    "verbose": "/verbose <on|off>",
+    "reasoning": "/reasoning <on|off>",
+    "usage": "/usage <off|tokens|full>",
+    "elevated": "/elevated <on|off>",
+    "elev": "/elev <on|off>",
+    "activation": "/activation <mode>",
+    "newsession": "/newsession [provider/model] [label]",
+    "ns": "/ns [provider/model] [label]",
+    "new": "/new",
+    "reset": "/reset",
+    "settings": "/settings",
+    "abort": "/abort",
+    "back": "/back",
+    "history": "/history [n]",
+    "clear": "/clear",
+    "exit": "/exit",
+    "quit": "/quit",
+}
+
+
+def command_suggestions() -> tuple[str, ...]:
+    """Return slash commands suitable for Input suggester/autocomplete."""
+    return tuple(f"/{name}" for name in COMMANDS)
+
+
+def format_command_hint(raw: str) -> str | None:
+    """Return short contextual help for command-typed input."""
+    if not raw.startswith("/"):
+        return None
+
+    content = raw[1:]
+    if not content:
+        return "Slash command mode. Press Tab to autocomplete, Enter to run."
+
+    parts = content.split(None, 1)
+    typed = parts[0].lower() if parts and parts[0] else ""
+    canonical = ALIASES.get(typed, typed)
+
+    usage = COMMAND_USAGE.get(canonical, f"/{canonical}") if canonical else None
+    description = COMMANDS.get(canonical)
+
+    has_args = len(parts) > 1 or content.endswith(" ")
+    if description and usage and has_args:
+        return f"Usage: {usage}"
+    if description and usage:
+        return f"{usage} — {description}"
+
+    matches = [name for name in COMMANDS if name.startswith(typed)]
+    if matches:
+        preview = ", ".join(f"/{name}" for name in matches[:5])
+        return f"Matches: {preview}"
+
+    return "Unknown command. Type /help for all commands."
 
 
 def parse_input(raw: str) -> ParsedInput:

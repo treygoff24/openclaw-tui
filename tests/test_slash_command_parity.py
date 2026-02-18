@@ -98,3 +98,35 @@ async def test_ns_alias_maps_to_newsession_known_command() -> None:
     await handlers.handle("/ns anthropic/claude-opus-4-6")
 
     assert seen == [("newsession", "anthropic/claude-opus-4-6")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw", "expected_name", "expected_args"),
+    [
+        ("/commands", "commands", ""),
+        ("/back", "back", ""),
+        ("/history 25", "history", "25"),
+        ("/clear", "clear", ""),
+    ],
+)
+async def test_parity_commands_are_treated_as_known_command(
+    raw: str,
+    expected_name: str,
+    expected_args: str,
+) -> None:
+    seen: list[tuple[str, str]] = []
+    handlers = ChatCommandHandlers(
+        client=_StubClient(),
+        state=_StubState(),
+        on_send_text=lambda _text: None,
+        on_system=lambda _text: None,
+        on_known_command=lambda name, args: (
+            seen.append((name, args)),
+            CommandResult(ok=True),
+        )[1],
+    )
+
+    await handlers.handle(raw)
+
+    assert seen == [(expected_name, expected_args)]

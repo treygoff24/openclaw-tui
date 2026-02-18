@@ -2,38 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
+from .commands import ALIASES, COMMANDS
 from .runtime_types import CommandResult
 
 
-KNOWN_COMMANDS = {
-    "help",
-    "status",
-    "agent",
-    "agents",
-    "session",
-    "sessions",
-    "model",
-    "models",
-    "think",
-    "verbose",
-    "reasoning",
-    "usage",
-    "elevated",
-    "elev",
-    "activation",
-    "newsession",
-    "new",
-    "reset",
-    "abort",
-    "settings",
-    "exit",
-    "quit",
-}
-
-ALIASES = {
-    "elev": "elevated",
-    "ns": "newsession",
-}
+KNOWN_COMMANDS = {ALIASES.get(name, name) for name in COMMANDS}
 
 
 def _parse_slash_command(raw: str) -> tuple[str, str]:

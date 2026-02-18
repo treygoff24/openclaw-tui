@@ -1,6 +1,6 @@
 """Tests for chat commands parser."""
 import pytest
-from openclaw_tui.chat.commands import parse_input, format_help, ParsedInput
+from openclaw_tui.chat.commands import format_command_hint, format_help, parse_input, ParsedInput
 
 
 class TestParseInput:
@@ -91,3 +91,18 @@ class TestFormatHelp:
         assert "back" in result
         assert "history" in result
         assert "clear" in result
+
+
+class TestFormatCommandHint:
+    def test_returns_none_for_non_command(self):
+        assert format_command_hint("hello") is None
+
+    def test_returns_usage_for_known_command(self):
+        hint = format_command_hint("/history 20")
+        assert hint == "Usage: /history [n]"
+
+    def test_returns_match_preview_for_partial_command(self):
+        hint = format_command_hint("/mo")
+        assert hint is not None
+        assert "/model" in hint
+        assert "/models" in hint

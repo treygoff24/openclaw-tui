@@ -5,7 +5,9 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static, RichLog, Input
 from textual.message import Message
+from textual.suggester import SuggestFromList
 
+from .commands import command_suggestions
 from openclaw_tui.models import ChatMessage
 
 
@@ -53,6 +55,7 @@ class ChatPanel(Vertical):
     """
 
     _SPINNER_FRAMES = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
+    _SLASH_SUGGESTIONS = command_suggestions()
 
     class Submit(Message):
         """Message sent when user submits a message in the chat input."""
@@ -66,7 +69,11 @@ class ChatPanel(Vertical):
         yield Static("Select a session", id="chat-header")
         yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
         yield Static("[dim #A8B5A2]● connected[/]", id="chat-status")
-        yield Input(placeholder="Ask your agent, or type /help", id="chat-input")
+        yield Input(
+            placeholder="Ask your agent, or type /help",
+            id="chat-input",
+            suggester=SuggestFromList(self._SLASH_SUGGESTIONS, case_sensitive=False),
+        )
 
     def on_mount(self) -> None:
         """Set up message handler on mount."""

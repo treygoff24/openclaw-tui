@@ -14,10 +14,10 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.theme import Theme
-from textual.widgets import Footer, Header, Tree
+from textual.widgets import Footer, Header, Input, Tree
 
 from .chat import ChatState
-from .chat.commands import format_help, parse_input
+from .chat.commands import format_command_hint, format_help, parse_input
 from .chat.command_handlers import ChatCommandHandlers
 from .chat.new_session_flow import (
     build_new_main_session_key,
@@ -32,7 +32,7 @@ from .gateway import GatewayWsClient
 from .models import AgentNode, ChatMessage, SessionInfo, TreeNodeData
 from .tree import build_tree
 from .transcript import read_transcript
-from .utils.clipboard import copy_to_clipboard, read_from_clipboard
+from .utils.clipboard import copy_to_clipboard, read_from_clipboard, read_image_to_temp_file_from_clipboard
 from .widgets import AgentTreeWidget, ChatPanel, LogPanel, NewSessionModal, SummaryBar
 from . import transcript
 
@@ -1221,6 +1221,16 @@ Footer {
             return False
         return self._insert_text_into_chat_input(text)
 
+    def _paste_image_from_system_clipboard(self) -> bool:
+        """Paste an image by staging clipboard bytes to a local file path."""
+        image_path = read_image_to_temp_file_from_clipboard()
+        if image_path is None:
+            return False
+        inserted = self._insert_text_into_chat_input(f"{image_path} ")
+        if inserted:
+            self.query_one(ChatPanel).set_status("● pasted image from clipboard")
+        return inserted
+
     def on_chat_panel_submit(self, event: ChatPanel.Submit) -> None:
         """Handle chat input submission (commands, shell, or regular message)."""
         if not self._chat_mode or self._chat_state is None:
@@ -1246,6 +1256,26 @@ Footer {
             return
         if self._insert_text_into_chat_input(event.text):
             event.stop()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Show lightweight slash-command hints while typing in chat input."""
+        if not self._chat_mode or event.input.id != "chat-input":
+            return
+        if self._chat_state is None:
+            return
+        if self._chat_state.is_busy:
+            return
+
+        chat_panel = self.query_one(ChatPanel)
+        hint = format_command_hint(event.value)
+        if hint:
+            chat_panel.set_status(f"● {hint}")
+            return
+
+        if self._chat_state.error:
+            chat_panel.set_status(self._format_error_status(self._chat_state.error))
+            return
+        chat_panel.set_status("● idle")
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """Enter or switch chat mode when selecting a session node."""
@@ -1345,7 +1375,11 @@ Footer {
 
     def on_key(self, event: events.Key) -> None:
         """Escape in chat mode exits back to transcript if input is empty."""
-        if self._chat_mode and event.key in {"ctrl+v", "meta+v", "shift+insert"}:
+        if self._chat_mode and event.key in {"ctrl+v", "meta+v", "alt+v", "shift+insert"}:
+            if self._paste_image_from_system_clipboard():
+                event.prevent_default()
+                event.stop()
+                return
             if self._paste_from_system_clipboard():
                 event.prevent_default()
                 event.stop()
