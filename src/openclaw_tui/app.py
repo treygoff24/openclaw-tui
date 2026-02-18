@@ -35,6 +35,8 @@ class AgentDashboard(App[None]):
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
         ("c", "copy_info", "Copy Info"),
+        ("v", "toggle_logs", "View Logs"),
+        ("e", "expand_all", "Expand All"),
     ]
 
     CSS = """
@@ -221,6 +223,23 @@ Footer {
             self.notify(f"Copied: {session.label or session.display_name}")
         else:
             self.notify("Failed to copy session info to clipboard", severity="error")
+
+    def action_toggle_logs(self) -> None:
+        """Toggle the log panel visibility. Tree expands to full width when hidden."""
+        log_panel = self.query_one(LogPanel)
+        tree = self.query_one(AgentTreeWidget)
+        if log_panel.display:
+            log_panel.display = False
+            tree.styles.width = "100%"
+        else:
+            log_panel.display = True
+            tree.styles.width = "2fr"
+
+    def action_expand_all(self) -> None:
+        """Expand all agent group nodes in the tree."""
+        tree = self.query_one(AgentTreeWidget)
+        for group in tree.root.children:
+            group.expand()
 
     def action_refresh(self) -> None:
         """Manual refresh triggered by 'r' key."""
