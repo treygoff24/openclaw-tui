@@ -19,6 +19,11 @@ from textual.widgets import Footer, Header, Tree
 from .chat import ChatState
 from .chat.commands import format_help, parse_input
 from .chat.command_handlers import ChatCommandHandlers
+from .chat.new_session_flow import (
+    build_new_main_session_key,
+    normalize_model_choices,
+    parse_newsession_args,
+)
 from .chat.event_handlers import ChatEventProcessor
 from .chat.runtime_types import CommandResult, RunTrackingState
 from .client import GatewayClient, GatewayError
@@ -28,7 +33,7 @@ from .models import AgentNode, ChatMessage, SessionInfo, TreeNodeData
 from .tree import build_tree
 from .transcript import read_transcript
 from .utils.clipboard import copy_to_clipboard, read_from_clipboard
-from .widgets import AgentTreeWidget, ChatPanel, LogPanel, SummaryBar
+from .widgets import AgentTreeWidget, ChatPanel, LogPanel, NewSessionModal, SummaryBar
 from . import transcript
 
 logger = logging.getLogger(__name__)
@@ -46,6 +51,7 @@ class AgentDashboard(App[None]):
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
+        ("ctrl+n", "new_session", "New Session"),
         ("meta+c", "copy_info", "Copy Info"),
         ("v", "toggle_logs", "View Logs"),
         ("e", "expand_all", "Expand All"),
@@ -320,6 +326,20 @@ Footer {
     def _collect_tree_relationships(
         tree_nodes: list[TreeNodeData],
     ) -> tuple[dict[str, str], dict[str, TreeNodeData]]:
+        """Walk tree nodes and collect parent-child relationships.
+
+        Recursively traverses the tree structure to build two lookup dictionaries:
+        one mapping each node key to its parent's key, and another mapping each
+        key to its TreeNodeData object.
+
+        Args:
+            tree_nodes: List of root TreeNodeData objects to traverse.
+
+        Returns:
+            A tuple of (parent_by_key, keyed_tree_nodes):
+            - parent_by_key: Dict mapping child keys to their parent keys.
+            - keyed_tree_nodes: Dict mapping all keys to their TreeNodeData.
+        """
         parent_by_key: dict[str, str] = {}
         keyed_tree_nodes: dict[str, TreeNodeData] = {}
 
@@ -341,6 +361,18 @@ Footer {
 
     @staticmethod
     def _group_sessions_fallback(sessions: list[SessionInfo]) -> list[AgentNode]:
+        """Group sessions by agent_id as a fallback when tree data is unavailable.
+
+        Creates AgentNode objects from a flat list of sessions, grouping them
+        by their agent_id. Results are sorted with "main" agent first, followed
+        by others alphabetically.
+
+        Args:
+            sessions: Flat list of SessionInfo objects to group.
+
+        Returns:
+            List of AgentNode objects, each containing its grouped sessions.
+        """
         grouped: dict[str, list[SessionInfo]] = {}
         for session in sessions:
             grouped.setdefault(session.agent_id, []).append(session)
@@ -433,6 +465,119 @@ Footer {
             self._show_transcript_for_session(self._selected_session)
         else:
             log_panel.show_placeholder()
+
+    def action_new_session(self) -> None:
+        """Open the new-session modal and create a fresh main-agent chat session."""
+        self.run_worker(
+            self._open_new_session_modal,
+            exclusive=True,
+            group="new_session_modal",
+        )
+
+    async def _open_new_session_modal(self) -> None:
+        try:
+            ws_client = await self._ensure_ws_client()
+            model_choices = normalize_model_choices(await ws_client.models_list())
+        except Exception as exc:  # noqa: BLE001
+            self._show_new_session_error(f"Model list failed: {exc}")
+            return
+
+        if not model_choices:
+            self._show_new_session_error("No models available")
+            return
+
+        allowed_models = {choice.ref for choice in model_choices}
+
+        def _on_result(result: tuple[str, str | None] | None) -> None:
+            if result is None:
+                return
+            model_ref, label = result
+            self.run_worker(
+                partial(
+                    self._create_new_main_session,
+                    model_ref,
+                    label,
+                    allowed_models=allowed_models,
+                ),
+                exclusive=True,
+                group="new_session_create",
+            )
+
+        self.push_screen(NewSessionModal(models=model_choices), callback=_on_result)
+
+    async def _create_new_main_session(
+        self,
+        model: str,
+        label: str | None,
+        *,
+        allowed_models: set[str] | None = None,
+    ) -> bool:
+        if allowed_models is not None and model not in allowed_models:
+            self._show_new_session_error(f"Model not available: {model}")
+            return False
+
+        created_key = build_new_main_session_key(
+            now_ms=int(time.time() * 1000),
+            rand=uuid4().hex[:8],
+        )
+        patch_kwargs: dict[str, object] = {"key": created_key, "model": model}
+        if label is not None:
+            patch_kwargs["label"] = label
+
+        try:
+            ws_client = await self._ensure_ws_client()
+            result = await ws_client.sessions_patch(**patch_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            self._show_new_session_error(f"New session failed: {exc}")
+            return False
+
+        resolved_key = created_key
+        if isinstance(result, dict):
+            candidate = result.get("key")
+            if isinstance(candidate, str) and candidate.strip():
+                resolved_key = candidate.strip()
+
+        session_info = self._build_provisional_session_info_for_new_key(
+            session_key=resolved_key,
+            model=model,
+            label=label,
+        )
+        self._enter_chat_mode_for_session(session_info, history_limit=200)
+        self._trigger_poll()
+        return True
+
+    def _build_provisional_session_info_for_new_key(
+        self,
+        *,
+        session_key: str,
+        model: str,
+        label: str | None,
+    ) -> SessionInfo:
+        now_ms = int(time.time() * 1000)
+        key_tail = session_key.rsplit(":", 1)[-1]
+        display_name = (label or "").strip() or key_tail or "new-session"
+        return SessionInfo(
+            key=session_key,
+            kind="chat",
+            channel="webchat",
+            display_name=display_name,
+            label=label.strip() if isinstance(label, str) and label.strip() else None,
+            updated_at=now_ms,
+            session_id=key_tail,
+            model=model,
+            context_tokens=None,
+            total_tokens=0,
+            aborted_last_run=False,
+            transcript_path=None,
+        )
+
+    def _show_new_session_error(self, text: str) -> None:
+        if self._chat_mode and self._chat_state is not None:
+            self._append_system_message(text)
+            self._chat_state.error = text
+            self.query_one(ChatPanel).set_status(self._format_error_status(text))
+            return
+        self.notify(text, severity="error")
 
     @staticmethod
     def _now_hhmm() -> str:
@@ -760,6 +905,17 @@ Footer {
             return CommandResult(ok=True)
 
         ws_client = await self._ensure_ws_client()
+
+        if name == "newsession":
+            model, label, error = parse_newsession_args(args)
+            if error is not None:
+                self._append_system_message(error)
+                return CommandResult(ok=False)
+            if model is None:
+                self.action_new_session()
+                return CommandResult(ok=True)
+            ok = await self._create_new_main_session(model, label)
+            return CommandResult(ok=ok)
 
         if name in {"new", "reset"}:
             await ws_client.sessions_reset(self._chat_state.session_key)
@@ -1203,6 +1359,12 @@ Footer {
 
         if event.key == "ctrl+c":
             self._handle_ctrl_c_quit()
+            event.prevent_default()
+            event.stop()
+            return
+
+        if event.key == "ctrl+n":
+            self.action_new_session()
             event.prevent_default()
             event.stop()
             return

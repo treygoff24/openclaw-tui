@@ -60,3 +60,41 @@ async def test_unknown_command_is_forwarded() -> None:
     await handlers.handle("/context")
 
     assert sent == ["/context"]
+
+
+@pytest.mark.asyncio
+async def test_newsession_is_treated_as_known_command() -> None:
+    seen: list[tuple[str, str]] = []
+    handlers = ChatCommandHandlers(
+        client=_StubClient(),
+        state=_StubState(),
+        on_send_text=lambda _text: None,
+        on_system=lambda _text: None,
+        on_known_command=lambda name, args: (
+            seen.append((name, args)),
+            CommandResult(ok=True),
+        )[1],
+    )
+
+    await handlers.handle("/newsession anthropic/claude-opus-4-6 sprint planning")
+
+    assert seen == [("newsession", "anthropic/claude-opus-4-6 sprint planning")]
+
+
+@pytest.mark.asyncio
+async def test_ns_alias_maps_to_newsession_known_command() -> None:
+    seen: list[tuple[str, str]] = []
+    handlers = ChatCommandHandlers(
+        client=_StubClient(),
+        state=_StubState(),
+        on_send_text=lambda _text: None,
+        on_system=lambda _text: None,
+        on_known_command=lambda name, args: (
+            seen.append((name, args)),
+            CommandResult(ok=True),
+        )[1],
+    )
+
+    await handlers.handle("/ns anthropic/claude-opus-4-6")
+
+    assert seen == [("newsession", "anthropic/claude-opus-4-6")]

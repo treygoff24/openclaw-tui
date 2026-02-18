@@ -52,7 +52,7 @@ def _mock_gateway(monkeypatch):
     mock_ws_client.sessions_patch = AsyncMock(return_value={})
     mock_ws_client.sessions_reset = AsyncMock(return_value={})
     mock_ws_client.agents_list = AsyncMock(return_value={"agents": []})
-    mock_ws_client.models_list = AsyncMock(return_value={"models": []})
+    mock_ws_client.models_list = AsyncMock(return_value=[])
     mock_ws_client.status = AsyncMock(return_value={"ok": True})
     monkeypatch.setattr("openclaw_tui.app.GatewayWsClient", MagicMock(return_value=mock_ws_client))
     monkeypatch.setattr("openclaw_tui.app.build_tree", lambda sessions: [])
@@ -82,3 +82,23 @@ async def test_meta_c_still_copies_info() -> None:
         with patch.object(app, "action_copy_info") as copy_action:
             app.on_key(events.Key("meta+c", None))
         copy_action.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_n_opens_new_session_modal_from_transcript_mode() -> None:
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        with patch.object(app, "action_new_session") as open_new:
+            app.on_key(events.Key("ctrl+n", None))
+        open_new.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_n_opens_new_session_modal_from_chat_mode() -> None:
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        app._enter_chat_mode_for_session(_make_session())
+        await pilot.pause()
+        with patch.object(app, "action_new_session") as open_new:
+            app.on_key(events.Key("ctrl+n", None))
+        open_new.assert_called_once()

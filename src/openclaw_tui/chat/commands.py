@@ -27,6 +27,8 @@ COMMANDS = {
     "elevated": "Set elevated mode",
     "elev": "Alias for /elevated",
     "activation": "Set activation mode",
+    "newsession": "Create fresh main session (picker or direct)",
+    "ns": "Alias for /newsession",
     "new": "Reset current session",
     "reset": "Reset current session",
     "settings": "Open settings",
@@ -36,6 +38,10 @@ COMMANDS = {
     "clear": "Clear chat display",
     "exit": "Exit the app",
     "quit": "Exit the app",
+}
+
+ALIASES = {
+    "ns": "newsession",
 }
 
 
@@ -65,6 +71,7 @@ def parse_input(raw: str) -> ParsedInput:
         
         # First token is command name (lowercased), rest is args
         name = parts[0].lower() if parts else ""
+        name = ALIASES.get(name, name)
         args = parts[1] if len(parts) > 1 else ""
         
         return ParsedInput(kind="command", name=name, args=args, raw=raw)

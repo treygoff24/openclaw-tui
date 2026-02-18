@@ -29,6 +29,24 @@ class TestParseInput:
         assert result.name == "unknown"
         assert result.args == ""
 
+    def test_slash_newsession(self):
+        result = parse_input("/newsession")
+        assert result.kind == "command"
+        assert result.name == "newsession"
+        assert result.args == ""
+
+    def test_slash_ns_alias_maps_to_newsession(self):
+        result = parse_input("/ns")
+        assert result.kind == "command"
+        assert result.name == "newsession"
+        assert result.args == ""
+
+    def test_slash_newsession_with_model_and_label_args(self):
+        result = parse_input("/newsession anthropic/claude-opus-4-6 sprint planning")
+        assert result.kind == "command"
+        assert result.name == "newsession"
+        assert result.args == "anthropic/claude-opus-4-6 sprint planning"
+
     def test_bang_command(self):
         result = parse_input("!ls -la")
         assert result.kind == "bang"
@@ -69,6 +87,7 @@ class TestFormatHelp:
         assert "help" in result
         assert "status" in result
         assert "abort" in result
+        assert "newsession" in result
         assert "back" in result
         assert "history" in result
         assert "clear" in result

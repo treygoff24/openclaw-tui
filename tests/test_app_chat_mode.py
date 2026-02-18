@@ -52,7 +52,7 @@ def _mock_gateway(monkeypatch):
     mock_ws_client.sessions_patch = AsyncMock(return_value={})
     mock_ws_client.sessions_reset = AsyncMock(return_value={})
     mock_ws_client.agents_list = AsyncMock(return_value={"agents": []})
-    mock_ws_client.models_list = AsyncMock(return_value={"models": []})
+    mock_ws_client.models_list = AsyncMock(return_value=[])
     mock_ws_client.status = AsyncMock(return_value={"ok": True})
     monkeypatch.setattr(
         "openclaw_tui.app.GatewayWsClient",
@@ -457,3 +457,55 @@ async def test_action_copy_info_copies_chat_transcript_when_in_chat_mode() -> No
         copied_text = mock_copy.call_args[0][0]
         assert "[10:00] user: hello" in copied_text
         assert "[10:01] assistant: hi" in copied_text
+
+
+@pytest.mark.asyncio
+async def test_newsession_direct_create_switches_to_fresh_main_session() -> None:
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        session = _make_session(agent_id="main", session_key="agent:main:main")
+        app._enter_chat_mode_for_session(session)
+        await pilot.pause()
+
+        app._ws_client.sessions_patch.return_value = {"key": "agent:main:chat:20250101120000-a1b2c3d4"}
+
+        with patch(
+            "openclaw_tui.app.build_new_main_session_key",
+            return_value="agent:main:chat:20250101120000-a1b2c3d4",
+        ):
+            app._run_chat_command("/newsession anthropic/claude-opus-4-6 sprint planning")
+            await pilot.pause()
+            await pilot.pause()
+
+        kwargs = app._ws_client.sessions_patch.await_args.kwargs
+        assert kwargs["key"] == "agent:main:chat:20250101120000-a1b2c3d4"
+        assert kwargs["model"] == "anthropic/claude-opus-4-6"
+        assert kwargs["label"] == "sprint planning"
+        assert app._chat_state is not None
+        assert app._chat_state.session_key == "agent:main:chat:20250101120000-a1b2c3d4"
+
+
+@pytest.mark.asyncio
+async def test_newsession_create_failure_keeps_current_session() -> None:
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        session = _make_session(agent_id="main", session_key="agent:main:main")
+        app._enter_chat_mode_for_session(session)
+        await pilot.pause()
+
+        app._ws_client.sessions_patch.side_effect = RuntimeError("missing scope: operator.write")
+
+        with patch(
+            "openclaw_tui.app.build_new_main_session_key",
+            return_value="agent:main:chat:20250101120000-a1b2c3d4",
+        ):
+            app._run_chat_command("/newsession anthropic/claude-opus-4-6 sprint planning")
+            await pilot.pause()
+            await pilot.pause()
+
+        assert app._chat_state is not None
+        assert app._chat_state.session_key == "agent:main:main"
+        status = app.query_one("#chat-status")
+        assert "operator.write" in str(status.content).lower()

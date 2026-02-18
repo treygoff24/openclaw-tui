@@ -47,7 +47,7 @@ def _mock_gateway(monkeypatch):
     mock_ws_client.sessions_patch = AsyncMock(return_value={})
     mock_ws_client.sessions_reset = AsyncMock(return_value={})
     mock_ws_client.agents_list = AsyncMock(return_value={"agents": []})
-    mock_ws_client.models_list = AsyncMock(return_value={"models": []})
+    mock_ws_client.models_list = AsyncMock(return_value=[])
     mock_ws_client.status = AsyncMock(return_value={"ok": True})
     monkeypatch.setattr(
         "openclaw_tui.app.GatewayWsClient",

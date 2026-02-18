@@ -21,6 +21,7 @@ KNOWN_COMMANDS = {
     "elevated",
     "elev",
     "activation",
+    "newsession",
     "new",
     "reset",
     "abort",
@@ -31,6 +32,7 @@ KNOWN_COMMANDS = {
 
 ALIASES = {
     "elev": "elevated",
+    "ns": "newsession",
 }
 
 
