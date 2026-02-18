@@ -18,6 +18,7 @@ class SummaryBar(Static):
     introspection in tests.
     """
     _RUNNING_FRAMES = ("◐", "◓", "◑", "◒")
+    _IDLE_FRAME = "○"
 
     DEFAULT_CSS = """
     SummaryBar {
@@ -103,7 +104,7 @@ class SummaryBar(Static):
             frame = self._RUNNING_FRAMES[self._running_frame_index % len(self._RUNNING_FRAMES)]
             self._running_frame_index += 1
         else:
-            frame = "◌"
+            frame = self._IDLE_FRAME
         return (
             f"[bold #F5A623]{frame}[/] {active} running  "
             f"[dim #A8B5A2]✓[/] {completed} done  "
