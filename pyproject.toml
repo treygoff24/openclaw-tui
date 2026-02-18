@@ -1,0 +1,18 @@
+[project]
+name = "openclaw-tui"
+version = "0.1.0"
+description = "Live terminal dashboard for OpenClaw agent sessions"
+requires-python = ">=3.12"
+dependencies = [
+    "textual>=3.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+openclaw-tui = "openclaw_tui.__main__:main"

@@ -1,0 +1,34 @@
+# Virtual environment
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Egg/dist/build
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Testing/coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI build artifacts (design docs, plans, retros)
+# Uncomment the next line to exclude from repo:
+# .ai/
