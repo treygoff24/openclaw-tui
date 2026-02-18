@@ -132,6 +132,15 @@ class AgentTreeWidget(Tree[SessionInfo]):
                 key=lambda agent_id: (0, "") if agent_id == "main" else (1, agent_id),
             )
             nodes = [AgentNode(agent_id=agent_id, sessions=[]) for agent_id in grouped_agents]
+        elif synthetic_sessions:
+            # Keep synthetic-only agent IDs visible even when some real agent groups exist.
+            existing_agent_ids = {node.agent_id for node in nodes}
+            missing_agent_ids = sorted(
+                {session.agent_id for session in synthetic_sessions.values()} - existing_agent_ids,
+                key=lambda agent_id: (0, "") if agent_id == "main" else (1, agent_id),
+            )
+            if missing_agent_ids:
+                nodes.extend(AgentNode(agent_id=agent_id, sessions=[]) for agent_id in missing_agent_ids)
 
         if not nodes:
             self.root.add_leaf("No sessions")

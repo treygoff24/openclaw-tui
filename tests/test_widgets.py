@@ -310,6 +310,35 @@ async def test_recursive_tree_nodes_synthesize_sessions_when_missing() -> None:
         assert node.data.display_name == "Ephemeral"
 
 
+@pytest.mark.asyncio
+async def test_tree_keeps_synthetic_cross_agent_subagents_visible() -> None:
+    """Synthetic children with a different agent_id should still render in their own group."""
+    app = WidgetTestApp()
+    async with app.run_test() as pilot:
+        tree = app.query_one(AgentTreeWidget)
+        parent = make_session(key="agent:sonnet:main", display_name="sonnet-main")
+        child_keys = [f"agent:glm:subagent:child-{idx}" for idx in range(1, 4)]
+        synthetic_sessions = {
+            key: make_session(key=key, display_name=f"glm-child-{idx}", model="glm-4")
+            for idx, key in enumerate(child_keys, start=1)
+        }
+        parent_by_key = {key: parent.key for key in child_keys}
+        tree.update_tree(
+            [AgentNode(agent_id="sonnet", sessions=[parent])],
+            NOW_MS,
+            parent_by_key=parent_by_key,
+            synthetic_sessions=synthetic_sessions,
+        )
+        await pilot.pause()
+
+        group_by_name = {node.label.plain: node for node in tree.root.children}
+        assert "sonnet" in group_by_name
+        assert "glm" in group_by_name
+        glm_group = group_by_name["glm"]
+        assert len(glm_group.children) == 3
+        assert {node.data.key for node in glm_group.children} == set(child_keys)
+
+
 # ---------------------------------------------------------------------------
 # SummaryBar tests
 # ---------------------------------------------------------------------------
