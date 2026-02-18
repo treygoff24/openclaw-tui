@@ -37,10 +37,11 @@ class AgentDashboard(App[None]):
     """
 
     TITLE = "🌘 OpenClaw"
+    CTRL_C_QUIT_CONFIRM_TIMEOUT_SECONDS = 2.0
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
-        ("c", "copy_info", "Copy Info"),
+        ("meta+c", "copy_info", "Copy Info"),
         ("v", "toggle_logs", "View Logs"),
         ("e", "expand_all", "Expand All"),
     ]
@@ -114,6 +115,7 @@ Footer {
         self._selected_session: SessionInfo | None = None
         self._chat_mode: bool = False
         self._chat_state: ChatState | None = None
+        self._last_ctrl_c_press_at: float | None = None
         self.register_theme(Theme(
             name="hearth",
             primary="#F5A623",
@@ -798,6 +800,24 @@ Footer {
         logger.info("Manual refresh triggered")
         self._trigger_poll()
 
+    def _handle_ctrl_c_quit(self) -> None:
+        """Require double Ctrl+C within timeout before quitting the app."""
+        now = time.monotonic()
+        last_press = self._last_ctrl_c_press_at
+        timeout = self.CTRL_C_QUIT_CONFIRM_TIMEOUT_SECONDS
+
+        if last_press is not None and (now - last_press) <= timeout:
+            self._last_ctrl_c_press_at = None
+            self.exit()
+            return
+
+        self._last_ctrl_c_press_at = now
+        timeout_seconds = int(timeout)
+        self.notify(
+            f"Press Ctrl+C again within {timeout_seconds}s to quit",
+            severity="warning",
+        )
+
     def on_key(self, event: events.Key) -> None:
         """Escape in chat mode exits back to transcript if input is empty."""
         if self._chat_mode and event.key in {"ctrl+v", "meta+v", "shift+insert"}:
@@ -806,8 +826,14 @@ Footer {
                 event.stop()
                 return
 
-        if event.key in {"ctrl+c", "meta+c"}:
+        if event.key == "meta+c":
             self.action_copy_info()
+            event.prevent_default()
+            event.stop()
+            return
+
+        if event.key == "ctrl+c":
+            self._handle_ctrl_c_quit()
             event.prevent_default()
             event.stop()
             return

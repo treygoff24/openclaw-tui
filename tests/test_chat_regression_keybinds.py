@@ -1,7 +1,7 @@
 """E7: Keybind regression tests - ensure chat mode doesn't break existing keybinds."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from textual import events
@@ -66,8 +66,8 @@ def _make_session(agent_id: str = "test-agent", session_key: str = "agent:main:t
 
 
 @pytest.mark.asyncio
-async def test_c_keybind_triggers_copy_info() -> None:
-    """c keybind still triggers copy action (not chat)."""
+async def test_meta_c_keybind_triggers_copy_info() -> None:
+    """meta+c keybind triggers copy action (not chat)."""
     app = AgentDashboard()
 
     async with app.run_test() as pilot:
@@ -218,7 +218,7 @@ async def test_bindings_are_registered() -> None:
 
     assert "q" in binding_keys  # quit
     assert "r" in binding_keys  # refresh
-    assert "c" in binding_keys  # copy_info
+    assert "meta+c" in binding_keys  # copy_info
     assert "v" in binding_keys  # toggle_logs
     assert "e" in binding_keys  # expand_all
 
@@ -232,3 +232,48 @@ async def test_meta_c_key_event_triggers_copy_action() -> None:
         with patch.object(app, "action_copy_info") as mock_copy:
             app.on_key(events.Key("meta+c", None))
         mock_copy.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_key_event_does_not_trigger_copy_action() -> None:
+    """ctrl+c is reserved for quit flow, not copy."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        app._selected_session = _make_session()
+        with patch.object(app, "action_copy_info") as mock_copy:
+            app.on_key(events.Key("ctrl+c", None))
+        mock_copy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_requires_double_press_to_quit_with_warning() -> None:
+    """First ctrl+c warns, second ctrl+c within timeout quits."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        with patch.object(app, "notify") as mock_notify, patch.object(app, "exit") as mock_exit:
+            app.on_key(events.Key("ctrl+c", None))
+            assert mock_notify.call_count == 1
+            first_message = mock_notify.call_args.args[0]
+            assert "Press Ctrl+C again" in first_message
+            assert mock_notify.call_args.kwargs.get("severity") == "warning"
+            mock_exit.assert_not_called()
+
+            app.on_key(events.Key("ctrl+c", None))
+            mock_exit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_second_press_after_timeout_does_not_quit() -> None:
+    """If timeout elapses, ctrl+c should warn again instead of quitting."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        with (
+            patch("openclaw_tui.app.time.monotonic", side_effect=[100.0, 103.0]),
+            patch.object(app, "notify") as mock_notify,
+            patch.object(app, "exit") as mock_exit,
+        ):
+            app.on_key(events.Key("ctrl+c", None))
+            app.on_key(events.Key("ctrl+c", None))
+
+            assert mock_notify.call_count == 2
+            mock_exit.assert_not_called()
