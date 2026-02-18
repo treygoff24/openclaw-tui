@@ -5,9 +5,22 @@ import logging
 import httpx
 
 from .config import GatewayConfig
-from .models import SessionInfo
+from .models import SessionInfo, TreeNodeData
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_tree_node(raw: dict) -> TreeNodeData:
+    """Parse a raw tree node dict into a TreeNodeData object recursively."""
+    children = [_parse_tree_node(c) for c in raw.get("children", [])]
+    return TreeNodeData(
+        key=raw["key"],
+        label=raw.get("label", raw["key"]),
+        depth=raw.get("depth", 0),
+        status=raw.get("status", "unknown"),
+        runtime_ms=raw.get("runtimeMs", 0),
+        children=children,
+    )
 
 
 class GatewayError(Exception):
@@ -99,6 +112,7 @@ class GatewayClient:
                     context_tokens=raw.get("contextTokens"),
                     total_tokens=raw.get("totalTokens", 0),
                     aborted_last_run=raw.get("abortedLastRun", False),
+                    transcript_path=raw.get("transcriptPath"),
                 )
                 sessions.append(session)
             except (KeyError, TypeError) as exc:
@@ -106,6 +120,37 @@ class GatewayClient:
 
         logger.debug("Fetched %d sessions from gateway", len(sessions))
         return sessions
+
+    def fetch_tree(self, depth: int = 5) -> list[TreeNodeData]:
+        """Fetch sessions_tree and return hierarchical TreeNodeData list.
+
+        Returns empty list on any error (connection, auth, parse).
+        Never raises.
+        """
+        client = self._get_client()
+        payload = {"tool": "sessions_tree", "input": {"depth": depth}}
+
+        try:
+            response = client.post("/tools/invoke", json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
+            logger.warning("fetch_tree connection failed: %s", exc)
+            return []
+
+        if response.status_code in (401, 403):
+            logger.warning("fetch_tree auth failed: HTTP %d", response.status_code)
+            return []
+
+        if response.status_code != 200:
+            return []
+
+        try:
+            data = response.json()
+            raw_tree = data["result"]["details"]["tree"]
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("fetch_tree unexpected response shape: %s", exc)
+            return []
+
+        return [_parse_tree_node(node) for node in raw_tree]
 
     def close(self) -> None:
         """Close HTTP client."""

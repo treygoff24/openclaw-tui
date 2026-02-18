@@ -41,10 +41,26 @@ class SummaryBar(Static):
 
         total = sum(counts.values())
         text = (
-            f"Active: {counts[SessionStatus.ACTIVE]}  "
-            f"Idle: {counts[SessionStatus.IDLE]}  "
-            f"Aborted: {counts[SessionStatus.ABORTED]}  "
-            f"Total: {total}"
+            f"[bold #F5A623]●[/] {counts[SessionStatus.ACTIVE]} active  "
+            f"[dim #A8B5A2]○[/] {counts[SessionStatus.IDLE]} idle  "
+            f"[bold #C67B5C]⚠[/] {counts[SessionStatus.ABORTED]} aborted  "
+            f"│ [dim]{total} total[/dim]"
+        )
+        self._display_text = text
+        self.update(text)
+
+    def update_with_tree_stats(self, active: int, completed: int, total: int) -> None:
+        """Update with data from sessions_tree endpoint.
+
+        Args:
+            active:    Number of running sessions.
+            completed: Number of completed sessions.
+            total:     Total number of sessions.
+        """
+        text = (
+            f"[bold #F5A623]▶[/] {active} running  "
+            f"[dim #A8B5A2]✓[/] {completed} done  "
+            f"│ {total} total"
         )
         self._display_text = text
         self.update(text)
@@ -55,6 +71,6 @@ class SummaryBar(Static):
         Args:
             message: Human-readable error description.
         """
-        text = f"❌ {message}"
+        text = f"[bold #C67B5C]⚠[/] {message}"
         self._display_text = text
         self.update(text)

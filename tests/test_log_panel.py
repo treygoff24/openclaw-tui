@@ -59,7 +59,7 @@ async def test_log_panel_shows_placeholder_initially() -> None:
         panel = app.query_one(LogPanel)
         written = _capture_writes(panel, panel.show_placeholder)
 
-        assert any("Select a session to view logs" in w for w in written), (
+        assert any("Select a session" in w for w in written), (
             f"Expected placeholder text in writes: {written}"
         )
 

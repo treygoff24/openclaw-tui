@@ -258,22 +258,24 @@ async def test_summary_bar_shows_correct_counts() -> None:
         await pilot.pause()
 
         text = bar._display_text
-        assert "Active: 2" in text
-        assert "Idle: 1" in text
-        assert "Aborted: 1" in text
-        assert "Total: 4" in text
+        # New format: "● 2 active  ○ 1 idle  ⚠ 1 aborted  │ 4 total"
+        assert "2 active" in text
+        assert "1 idle" in text
+        assert "1 aborted" in text
+        assert "4 total" in text
 
 
 @pytest.mark.asyncio
 async def test_summary_bar_set_error() -> None:
-    """set_error displays error message prefixed with ❌."""
+    """set_error displays error message prefixed with ⚠."""
     app = WidgetTestApp()
     async with app.run_test() as pilot:
         bar = app.query_one(SummaryBar)
         bar.set_error("Gateway unreachable")
         await pilot.pause()
 
-        assert "❌" in bar._display_text
+        # New format uses ⚠ in terracotta color instead of ❌
+        assert "⚠" in bar._display_text
         assert "Gateway unreachable" in bar._display_text
 
 
@@ -287,5 +289,6 @@ async def test_summary_bar_zero_sessions() -> None:
         await pilot.pause()
 
         text = bar._display_text
-        assert "Active: 0" in text
-        assert "Total: 0" in text
+        # New format: "● 0 active  ○ 0 idle  ⚠ 0 aborted  │ 0 total"
+        assert "0 active" in text
+        assert "0 total" in text

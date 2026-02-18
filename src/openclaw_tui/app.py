@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
+from textual.theme import Theme
 from textual.widgets import Header, Footer, Tree
 from textual.worker import Worker, WorkerState
 
@@ -14,7 +16,9 @@ from .widgets import AgentTreeWidget, SummaryBar, LogPanel
 from .config import GatewayConfig, load_config
 from .client import GatewayClient, GatewayError
 from .tree import build_tree
+from . import transcript
 from .transcript import read_transcript
+from .utils.clipboard import copy_to_clipboard
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,7 @@ class AgentDashboard(App[None]):
     agent tree, and displays them with a live summary footer.
     """
 
-    TITLE = "OpenClaw Agent Dashboard"
+    TITLE = "🌘 OpenClaw"
     BINDINGS = [
         ("q", "quit", "Quit"),
         ("r", "refresh", "Refresh"),
@@ -34,24 +38,39 @@ class AgentDashboard(App[None]):
     ]
 
     CSS = """
-    #main-content {
-        height: 1fr;
-    }
-    AgentTreeWidget {
-        width: 2fr;
-    }
-    LogPanel {
-        width: 3fr;
-        border-left: solid $accent;
-    }
-    SummaryBar {
-        height: auto;
-        min-height: 3;
-        background: $surface;
-        padding: 1;
-        dock: bottom;
-    }
-    """
+Screen {
+    background: #1A1A2E;
+}
+Header {
+    background: #16213E;
+    color: #F5A623;
+    text-style: bold;
+}
+#main-content {
+    height: 1fr;
+}
+AgentTreeWidget {
+    width: 2fr;
+    border: solid $accent;
+    background: #1A1A2E;
+}
+LogPanel {
+    width: 3fr;
+    border-left: solid $accent;
+    background: #16213E;
+}
+SummaryBar {
+    height: 3;
+    background: #16213E;
+    color: $foreground;
+    padding: 0 2;
+    dock: bottom;
+}
+Footer {
+    background: #16213E;
+    color: #A8B5A2;
+}
+"""
 
     def compose(self) -> ComposeResult:
         """Layout: Header → Horizontal(AgentTreeWidget + LogPanel) → SummaryBar → Footer."""
@@ -68,6 +87,20 @@ class AgentDashboard(App[None]):
         self._config = load_config()
         self._client = GatewayClient(self._config)
         self._selected_session: SessionInfo | None = None
+        self.register_theme(Theme(
+            name="hearth",
+            primary="#F5A623",
+            background="#1A1A2E",
+            surface="#16213E",
+            accent="#F5A623",
+            warning="#FFD93D",
+            error="#C67B5C",
+            success="#4ADE80",
+            secondary="#4A90D9",
+            foreground="#FFF8E7",
+            panel="#16213E",
+        ))
+        self.theme = "hearth"
         self.set_interval(2.0, self._trigger_poll)
         self._trigger_poll()  # immediate first poll
 
@@ -91,6 +124,24 @@ class AgentDashboard(App[None]):
             bar = self.query_one(SummaryBar)
             tree.update_tree(nodes, now_ms)
             bar.update_summary(nodes, now_ms)
+            try:
+                tree_nodes = await asyncio.to_thread(self._client.fetch_tree)
+                if tree_nodes:
+                    active = 0
+                    completed = 0
+                    total = 0
+                    stack = list(tree_nodes)
+                    while stack:
+                        tree_node = stack.pop()
+                        total += 1
+                        if tree_node.status == "active":
+                            active += 1
+                        elif tree_node.status == "completed":
+                            completed += 1
+                        stack.extend(tree_node.children)
+                    bar.update_with_tree_stats(active=active, completed=completed, total=total)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Tree stats update skipped: %s", exc)
             logger.info("Poll OK — %d sessions across %d agents", len(sessions), len(nodes))
         except (GatewayError, ConnectionError) as exc:
             logger.warning("Gateway poll failed: %s", exc)
@@ -115,13 +166,35 @@ class AgentDashboard(App[None]):
         self._selected_session = node_data
         log_panel = self.query_one(LogPanel)
         try:
-            messages = read_transcript(
-                session_id=node_data.session_id,
-                agent_id=node_data.agent_id,
-            )
-            log_panel.show_transcript(messages)
+            transcript_path = getattr(node_data, "transcript_path", None)
+            messages = []
+            if transcript_path:
+                read_from_path = getattr(transcript, "read_transcript_from_path", None)
+                if callable(read_from_path):
+                    try:
+                        messages = read_from_path(transcript_path=transcript_path)
+                    except TypeError:
+                        messages = read_from_path(transcript_path)
+                else:
+                    kwargs = {
+                        "session_id": node_data.session_id,
+                        "agent_id": node_data.agent_id,
+                    }
+                    if "transcript_path" in inspect.signature(read_transcript).parameters:
+                        kwargs["transcript_path"] = transcript_path
+                    messages = read_transcript(**kwargs)
+            else:
+                messages = read_transcript(
+                    session_id=node_data.session_id,
+                    agent_id=node_data.agent_id,
+                )
+            log_panel.show_transcript(messages, session_info=node_data)
         except Exception as exc:  # noqa: BLE001 — never crash the TUI
-            logger.warning("Failed to load transcript for %s: %s", node_data.session_id, exc)
+            logger.warning(
+                "Failed to load transcript for %s: %s",
+                getattr(node_data, "session_id", "unknown"),
+                exc,
+            )
             log_panel.show_error(str(exc) or "Failed to load transcript")
 
     def action_copy_info(self) -> None:
@@ -140,31 +213,14 @@ class AgentDashboard(App[None]):
         ]
         info_text = "\n".join(info_lines)
         try:
-            import subprocess
-            proc = subprocess.run(
-                ["xclip", "-selection", "clipboard"],
-                input=info_text.encode(),
-                capture_output=True,
-                timeout=2,
-            )
-            if proc.returncode == 0:
-                self.notify(f"Copied: {session.label or session.display_name}")
-            else:
-                # Fallback: try xsel
-                subprocess.run(
-                    ["xsel", "--clipboard", "--input"],
-                    input=info_text.encode(),
-                    capture_output=True,
-                    timeout=2,
-                )
-                self.notify(f"Copied: {session.label or session.display_name}")
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            # No clipboard tool available — write to /tmp instead
-            import tempfile
-            path = "/tmp/openclaw-tui-session.txt"
-            with open(path, "w") as f:
-                f.write(info_text)
-            self.notify(f"Saved to {path} (install xclip for clipboard)")
+            copied = copy_to_clipboard(info_text)
+        except Exception:  # noqa: BLE001
+            copied = False
+
+        if copied:
+            self.notify(f"Copied: {session.label or session.display_name}")
+        else:
+            self.notify("Failed to copy session info to clipboard", severity="error")
 
     def action_refresh(self) -> None:
         """Manual refresh triggered by 'r' key."""

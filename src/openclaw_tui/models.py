@@ -36,6 +36,7 @@ class SessionInfo:
     context_tokens: int | None
     total_tokens: int
     aborted_last_run: bool
+    transcript_path: str | None = None
 
     def status(self, now_ms: int) -> SessionStatus:
         if self.aborted_last_run:
@@ -62,6 +63,41 @@ class SessionInfo:
         """Extract agent_id from key. 'agent:main:cron:UUID' → 'main'."""
         parts = self.key.split(":", 2)
         return parts[1] if len(parts) >= 2 else "unknown"
+
+
+@dataclass
+class TreeNodeData:
+    key: str
+    label: str
+    depth: int
+    status: str  # "active" | "completed" | "failed"
+    runtime_ms: int
+    children: list[TreeNodeData] = field(default_factory=list)
+
+
+def format_runtime(ms: int) -> str:
+    """Format runtime in ms to human-readable. 1000→'1s', 61000→'1m1s', 3661000→'1h1m'"""
+    if ms == 0:
+        return "0s"
+    
+    # Use ceiling for total seconds (handles cases like 199554ms → 200s)
+    total_seconds = (ms + 999) // 1_000
+    
+    hours = total_seconds // 3_600
+    remainder = total_seconds % 3_600
+    minutes = remainder // 60
+    seconds = remainder % 60
+    
+    parts = []
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    # Only show seconds if no hours (matches "1h1m" case where seconds are hidden)
+    if seconds > 0 and hours == 0:
+        parts.append(f"{seconds}s")
+    
+    return "".join(parts)
 
 
 @dataclass
