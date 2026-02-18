@@ -1,0 +1,206 @@
+"""ChatPanel widget — interactive chat interface for selected sessions."""
+from __future__ import annotations
+
+from textual.app import ComposeResult
+from textual.containers import Vertical
+from textual.widgets import Static, RichLog, Input
+from textual.message import Message
+
+from openclaw_tui.models import ChatMessage
+
+
+class ChatPanel(Vertical):
+    """Interactive chat panel — replaces LogPanel in chat mode.
+
+    Default state: shows "Select a session" in header, placeholder in log
+    When populated: shows messages with role-based formatting
+    """
+
+    DEFAULT_CSS = """
+    ChatPanel {
+        height: 100%;
+        background: #16213E;
+        padding: 0 1;
+    }
+    #chat-header {
+        height: 1;
+        background: #1A1A2E;
+        color: #F5A623;
+        text-style: bold;
+        padding: 0 1;
+        border-bottom: solid #2A2E3D;
+    }
+    #chat-log {
+        height: 1fr;
+        border: round #2A2E3D;
+        background: #16213E;
+        padding: 0 1;
+    }
+    #chat-status {
+        height: 1;
+        color: #A8B5A2;
+        padding: 0 1;
+    }
+    #chat-input {
+        height: 3;
+        border: round #2A2E3D;
+        background: #1A1A2E;
+        color: #FFF8E7;
+    }
+    #chat-input:focus {
+        border: round #F5A623;
+    }
+    """
+
+    _SPINNER_FRAMES = ("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷")
+
+    class Submit(Message):
+        """Message sent when user submits a message in the chat input."""
+
+        def __init__(self, text: str) -> None:
+            super().__init__()
+            self.text = text
+
+    def compose(self) -> ComposeResult:
+        """Compose the chat panel with header, log, status, and input."""
+        yield Static("Select a session", id="chat-header")
+        yield RichLog(id="chat-log", wrap=True, highlight=True, markup=True)
+        yield Static("[dim #A8B5A2]● connected[/]", id="chat-status")
+        yield Input(placeholder="Ask your agent, or type /help", id="chat-input")
+
+    def on_mount(self) -> None:
+        """Set up message handler on mount."""
+        input_widget = self.query_one("#chat-input")
+        input_widget.focus()
+        self._spinner_index = 0
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle input submission and post a message to the app."""
+        if event.input.value:
+            self.post_message(self.Submit(event.input.value))
+            event.input.value = ""
+
+    def set_header(self, text: str) -> None:
+        """Update the header with refined rich formatting."""
+        header = self.query_one("#chat-header")
+        stripped = text.strip()
+        if stripped.lower() == "select a session":
+            header.update("[dim #A8B5A2]Select a session[/]")
+            return
+
+        parts = [part.strip() for part in stripped.split("·")]
+        if len(parts) >= 3:
+            session_name, agent_id, model = parts[:3]
+            selected_session = getattr(self.app, "_selected_session", None)
+            total_tokens = getattr(selected_session, "total_tokens", None)
+            token_label = f"{total_tokens:,} tokens" if isinstance(total_tokens, int) else session_name
+            header.update(
+                f"[bold #F5A623]{agent_id}[/] [dim #7B7F87]•[/] "
+                f"[#A8B5A2]{model}[/] [dim #7B7F87]•[/] [#C67B5C]{token_label}[/]"
+            )
+            return
+
+        header.update(f"[bold #F5A623]{stripped}[/]")
+
+    def set_status(self, text: str) -> None:
+        """Update status with calm idle, alive busy, and clear error states."""
+        status = self.query_one("#chat-status")
+        lower = text.lower()
+
+        if "connection lost" in lower:
+            status.update("[bold #C67B5C]⚠ Connection lost[/]")
+            return
+        if "error" in lower:
+            status.update(f"[bold #C67B5C]⚠ {text.replace('●', '').strip()}[/]")
+            return
+        if "timeout" in lower:
+            status.update("[bold #C67B5C]⚠ Timed out waiting for response[/]")
+            return
+        if "idle" in lower:
+            status.update("[dim #A8B5A2]● connected[/]")
+            return
+
+        busy_label = None
+        if "loading history" in lower:
+            busy_label = "syncing history..."
+        elif "waiting for response" in lower:
+            busy_label = "thinking..."
+        elif "sending" in lower:
+            busy_label = "sending..."
+        elif "running shell command" in lower:
+            busy_label = "running shell..."
+        elif "aborting" in lower:
+            busy_label = "aborting..."
+        elif "loading" in lower:
+            busy_label = "loading..."
+
+        if busy_label is not None:
+            frame = self._SPINNER_FRAMES[self._spinner_index % len(self._SPINNER_FRAMES)]
+            self._spinner_index += 1
+            status.update(f"[bold #F5A623]{frame}[/] [#A8B5A2]{busy_label}[/]")
+            return
+
+        status.update(f"[#A8B5A2]{text}[/]")
+
+    def _write_block(self, lines: list[str]) -> None:
+        """Write a formatted block with one blank spacer line."""
+        rich_log = self.query_one("#chat-log")
+        for line in lines:
+            rich_log.write(line)
+        rich_log.write("")
+
+    def append_message(self, msg: ChatMessage) -> None:
+        """Render a message to the chat log with role-based formatting.
+
+        Role blocks use subtle framing and spacing for readability.
+        """
+        if msg.role == "user":
+            self._write_block([
+                f"[#F5A623]┌─[/] [bold #F5A623]you[/] [dim #7B7F87]{msg.timestamp}[/]",
+                f"[#F5A623]└─[/] {msg.content}",
+            ])
+        elif msg.role == "assistant":
+            self._write_block([
+                f"[#A8B5A2]┌─[/] [bold #A8B5A2]assistant[/] [dim #7B7F87]{msg.timestamp}[/]",
+                f"[#A8B5A2]└─[/] {msg.content}",
+            ])
+        elif msg.role == "system":
+            self._write_block([
+                f"[dim #7B7F87]├─ SYSTEM {msg.timestamp}[/]",
+                f"[dim #A8B5A2]{msg.content}[/]",
+            ])
+        elif msg.role == "tool":
+            tool_name = msg.tool_name or "tool"
+            self._write_block([
+                f"[dim #7B7F87]╭─ ⚙ {tool_name} {msg.timestamp}[/]",
+                f"[dim #A8B5A2]╰─ {msg.content}[/]",
+            ])
+        else:
+            self._write_block([
+                f"[dim #7B7F87]├─ {msg.role} {msg.timestamp}[/]",
+                f"[dim #A8B5A2]{msg.content}[/]",
+            ])
+
+    def show_messages(self, messages: list[ChatMessage]) -> None:
+        """Clear log and render all messages."""
+        rich_log = self.query_one("#chat-log")
+        rich_log.clear()
+
+        for msg in messages:
+            self.append_message(msg)
+
+    def clear_log(self) -> None:
+        """Clear the RichLog widget."""
+        rich_log = self.query_one("#chat-log")
+        rich_log.clear()
+
+    def show_placeholder(self, text: str | None = None) -> None:
+        """Show placeholder text in the log.
+
+        Args:
+            text: Optional custom placeholder text. Defaults to "Select a session".
+        """
+        rich_log = self.query_one("#chat-log")
+        placeholder = text or "Select a session"
+        rich_log.clear()
+        rich_log.write(f"[dim #7B7F87]┌─[/] [#A8B5A2]{placeholder}[/]")

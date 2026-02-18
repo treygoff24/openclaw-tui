@@ -18,7 +18,10 @@ class LogPanel(RichLog):
 
     DEFAULT_CSS = """
     LogPanel {
-        border-left: solid $accent;
+        height: 1fr;
+        border: round #2A2E3D;
+        background: #16213E;
+        padding: 0 1;
     }
     """
 
@@ -50,8 +53,19 @@ class LogPanel(RichLog):
             rel = relative_time(session_info.updated_at, now_ms)
             agent_id = session_info.agent_id
             model = session_info.short_model
-            self.write(f"[bold #F5A623]agent:[/] {agent_id}  [bold #F5A623]model:[/] {model}  [bold #F5A623]last:[/] {rel}")
-            self.write("[#A8B5A2 dim]" + "─" * 40 + "[/]")
+            tokens = getattr(session_info, "total_tokens", None)
+            token_chunk = (
+                f"  [dim #7B7F87]•[/] [bold #C67B5C]{tokens:,} tokens[/]"
+                if isinstance(tokens, int)
+                else ""
+            )
+            self.write(
+                f"[bold #F5A623]agent:[/] {agent_id}  [dim #7B7F87]•[/] "
+                f"[bold #F5A623]model:[/] {model}{token_chunk}  [dim #7B7F87]•[/] "
+                f"[bold #F5A623]last:[/] {rel}"
+            )
+            self.write("[#7B7F87 dim]" + "─" * 52 + "[/]")
+            self.write("")
 
         if not messages:
             self.write("[dim]No messages found[/dim]")
@@ -59,16 +73,26 @@ class LogPanel(RichLog):
 
         for msg in messages:
             if msg.role == "user":
-                self.write(f"[#F5A623][{msg.timestamp}][/] [bold cyan]◉ user:[/bold cyan] {msg.content}")
+                self.write(
+                    f"[#F5A623][{msg.timestamp}][/] [#F5A623]┌─[/] "
+                    f"[bold cyan]◉ user:[/bold cyan] {msg.content}"
+                )
+                self.write("[#F5A623]└─[/]")
             elif msg.role == "assistant":
-                self.write(f"[#F5A623][{msg.timestamp}][/] [bold green]◆ asst:[/bold green] {msg.content}")
+                self.write(
+                    f"[#F5A623][{msg.timestamp}][/] [#A8B5A2]┌─[/] "
+                    f"[bold green]◆ asst:[/bold green] {msg.content}"
+                )
+                self.write("[#A8B5A2]└─[/]")
             else:
-                self.write(f"[#A8B5A2 dim][{msg.timestamp}] · {msg.role}: {msg.content}[/]")
+                self.write(f"[#A8B5A2 dim][{msg.timestamp}] [dim]╭─ · {msg.role}[/]")
+                self.write(f"[#A8B5A2 dim]╰─ {msg.content}[/]")
+            self.write("")
 
     def show_placeholder(self) -> None:
         """Show placeholder text."""
         self.clear()
-        self.write("[#A8B5A2 dim]🌘 Select a session to view its transcript[/]")
+        self.write("[#7B7F87 dim]┌─[/] [#A8B5A2 dim]🌘 Select a session to view its transcript[/]")
 
     def show_error(self, message: str) -> None:
         """Show error message."""

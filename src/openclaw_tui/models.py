@@ -4,6 +4,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 
+@dataclass
+class ChatMessage:
+    role: str  # "user", "assistant", "system", "tool"
+    content: str
+    timestamp: str  # HH:MM display format
+    tool_name: str | None = None  # for tool messages
+
+
 class SessionStatus(Enum):
     ACTIVE = "active"
     IDLE = "idle"

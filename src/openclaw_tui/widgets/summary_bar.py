@@ -16,6 +16,15 @@ class SummaryBar(Static):
     The current display text is always stored in ``_display_text`` for easy
     introspection in tests.
     """
+    DEFAULT_CSS = """
+    SummaryBar {
+        height: 3;
+        background: #16213E;
+        color: #FFF8E7;
+        border-top: solid #2A2E3D;
+        padding: 0 2;
+    }
+    """
 
     def __init__(self, content: str = "⚡ Connecting...", **kwargs: object) -> None:
         """Initialise the widget and capture the initial display text.
@@ -60,7 +69,7 @@ class SummaryBar(Static):
         text = (
             f"[bold #F5A623]▶[/] {active} running  "
             f"[dim #A8B5A2]✓[/] {completed} done  "
-            f"│ {total} total"
+            f"[dim #7B7F87]│[/] [dim]{total} total[/]"
         )
         self._display_text = text
         self.update(text)

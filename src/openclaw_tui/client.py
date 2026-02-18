@@ -152,6 +152,119 @@ class GatewayClient:
 
         return [_parse_tree_node(node) for node in raw_tree]
 
+    def send_message(self, session_key: str, message: str) -> dict:
+        """Send a message to a session.
+
+        POST /tools/invoke with body:
+        {"tool": "sessions_send", "input": {"sessionKey": key, "message": msg}}
+
+        Raises ConnectionError if gateway unreachable.
+        Raises AuthError if 401/403.
+        Returns the full result dict on success.
+        """
+        client = self._get_client()
+        payload = {
+            "tool": "sessions_send",
+            "input": {"sessionKey": session_key, "message": message},
+        }
+
+        try:
+            response = client.post("/tools/invoke", json=payload)
+        except httpx.ConnectError as exc:
+            logger.warning("Gateway connection failed: %s", exc)
+            raise ConnectionError(f"Cannot reach gateway at {self.config.base_url}: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            logger.warning("Gateway request timed out: %s", exc)
+            raise ConnectionError(f"Gateway request timed out: {exc}") from exc
+        except httpx.RequestError as exc:
+            logger.warning("Gateway request error: %s", exc)
+            raise ConnectionError(f"Gateway request error: {exc}") from exc
+
+        if response.status_code in (401, 403):
+            logger.warning("Gateway auth failed: HTTP %d", response.status_code)
+            raise AuthError(f"Authentication failed: HTTP {response.status_code}")
+
+        if response.status_code != 200:
+            logger.warning("Unexpected gateway status %d", response.status_code)
+            raise GatewayError(f"Unexpected status code: {response.status_code}")
+
+        return response.json()
+
+    def fetch_history(self, session_key: str, limit: int = 30) -> list[dict]:
+        """Fetch message history for a session.
+
+        POST /tools/invoke with body:
+        {"tool": "sessions_history", "input": {"sessionKey": key, "limit": limit}}
+
+        Returns empty list on any error (connection, auth, parse).
+        Never raises.
+        """
+        client = self._get_client()
+        payload = {
+            "tool": "sessions_history",
+            "input": {"sessionKey": session_key, "limit": limit},
+        }
+
+        try:
+            response = client.post("/tools/invoke", json=payload)
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError) as exc:
+            logger.warning("fetch_history connection failed: %s", exc)
+            return []
+
+        if response.status_code in (401, 403):
+            logger.warning("fetch_history auth failed: HTTP %d", response.status_code)
+            return []
+
+        if response.status_code != 200:
+            return []
+
+        try:
+            data = response.json()
+            messages = data["result"]["details"]["messages"]
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("fetch_history unexpected response shape: %s", exc)
+            return []
+
+        return messages
+
+    def abort_session(self, session_key: str) -> dict:
+        """Abort an active session run.
+
+        POST /tools/invoke with body:
+        {"tool": "sessions_kill", "input": {"sessionKey": key}}
+
+        Raises ConnectionError if gateway unreachable.
+        Raises AuthError if 401/403.
+        Returns the full result dict on success.
+        """
+        client = self._get_client()
+        payload = {
+            "tool": "sessions_kill",
+            "input": {"sessionKey": session_key},
+        }
+
+        try:
+            response = client.post("/tools/invoke", json=payload)
+        except httpx.ConnectError as exc:
+            logger.warning("Gateway connection failed: %s", exc)
+            raise ConnectionError(f"Cannot reach gateway at {self.config.base_url}: {exc}") from exc
+        except httpx.TimeoutException as exc:
+            logger.warning("Gateway request timed out: %s", exc)
+            raise ConnectionError(f"Gateway request timed out: {exc}") from exc
+        except httpx.RequestError as exc:
+            logger.warning("Gateway request error: %s", exc)
+            raise ConnectionError(f"Gateway request error: {exc}") from exc
+
+        if response.status_code in (401, 403):
+            logger.warning("Gateway auth failed: HTTP %d", response.status_code)
+            raise AuthError(f"Authentication failed: HTTP {response.status_code}")
+
+        if response.status_code != 200:
+            logger.warning("Unexpected gateway status %d", response.status_code)
+            raise GatewayError(f"Unexpected status code: {response.status_code}")
+
+        return response.json()
+
     def close(self) -> None:
         """Close HTTP client."""
         if self._client and not self._client.is_closed:
