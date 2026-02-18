@@ -11,7 +11,8 @@ from websockets.asyncio.client import connect as ws_connect
 
 logger = logging.getLogger(__name__)
 
-PROTOCOL_VERSION = 1
+# Keep in sync with OpenClaw gateway protocol/schema version.
+PROTOCOL_VERSION = 3
 DEFAULT_TIMEOUT_MS = 30_000
 DEFAULT_CONNECT_DELAY_S = 0.75
 TOOL_EVENTS_CAP = "tool-events"
@@ -64,6 +65,8 @@ class GatewayWsClient:
         self._closed = False
         self._connect_nonce: str | None = None
         self._connect_sent = False
+        self._connect_error: str | None = None
+        self._connect_failed = asyncio.Event()
         self._last_seq: int | None = None
 
         self.hello: dict[str, Any] | None = None
@@ -79,6 +82,8 @@ class GatewayWsClient:
         if self._ws is not None:
             return
         self._closed = False
+        self._connect_error = None
+        self._connect_failed.clear()
         self._ws = await self._connector(self.url)
         self._reader_task = asyncio.create_task(self._read_loop())
         self._queue_connect()
@@ -99,11 +104,32 @@ class GatewayWsClient:
             except Exception:  # noqa: BLE001
                 pass
         self._ready.clear()
+        self._connect_failed.clear()
+        self._connect_error = None
         self._fail_pending(RuntimeError("gateway client stopped"))
 
     async def wait_ready(self, timeout_ms: int | None = None) -> None:
         timeout_s = (timeout_ms if timeout_ms is not None else self.request_timeout_ms) / 1000.0
-        await asyncio.wait_for(self._ready.wait(), timeout=timeout_s)
+        ready_task = asyncio.create_task(self._ready.wait())
+        failed_task = asyncio.create_task(self._connect_failed.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {ready_task, failed_task},
+                timeout=timeout_s,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for pending_task in pending:
+                pending_task.cancel()
+            if ready_task in done and self._ready.is_set():
+                return
+            if failed_task in done and self._connect_failed.is_set():
+                raise RuntimeError(self._connect_error or "gateway connect failed")
+            raise TimeoutError()
+        finally:
+            if not ready_task.done():
+                ready_task.cancel()
+            if not failed_task.done():
+                failed_task.cancel()
 
     async def request(
         self,
@@ -195,19 +221,24 @@ class GatewayWsClient:
     async def status(self) -> Any:
         return await self.request("status", {})
 
-    def _queue_connect(self) -> None:
+    def _queue_connect(self, *, delay_s: float | None = None) -> None:
         if self._connect_task is not None:
             self._connect_task.cancel()
-        self._connect_task = asyncio.create_task(self._connect_after_delay())
+        self._connect_task = asyncio.create_task(
+            self._connect_after_delay(self.connect_delay_s if delay_s is None else delay_s)
+        )
 
-    async def _connect_after_delay(self) -> None:
+    async def _connect_after_delay(self, delay_s: float) -> None:
         try:
-            await asyncio.sleep(self.connect_delay_s)
+            await asyncio.sleep(max(0.0, float(delay_s)))
             if self._closed:
                 return
             await self._send_connect()
         except Exception as exc:  # noqa: BLE001
             logger.debug("gateway connect failed: %s", exc)
+            self._connect_sent = False
+            self._connect_error = str(exc)
+            self._connect_failed.set()
             if self.on_disconnected is not None:
                 self.on_disconnected(str(exc))
 
@@ -254,6 +285,8 @@ class GatewayWsClient:
         hello = await self.request("connect", params)
         if isinstance(hello, dict):
             self.hello = hello
+        self._connect_error = None
+        self._connect_failed.clear()
         self._ready.set()
         if self.on_connected is not None:
             self.on_connected()
@@ -277,6 +310,9 @@ class GatewayWsClient:
             self._connect_sent = False
             self._connect_nonce = None
             self._ws = None
+            if not self._closed and not self._ready.is_set():
+                self._connect_error = reason
+                self._connect_failed.set()
             self._fail_pending(RuntimeError(f"gateway disconnected: {reason}"))
             if not self._closed and self.on_disconnected is not None:
                 self.on_disconnected(reason)
@@ -304,7 +340,7 @@ class GatewayWsClient:
             if isinstance(nonce, str) and nonce:
                 self._connect_nonce = nonce
             if not self._connect_sent:
-                asyncio.create_task(self._send_connect())
+                self._queue_connect(delay_s=0.0)
             return
 
         seq = frame.get("seq")

@@ -9,7 +9,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HOST = "127.0.0.1"
-_DEFAULT_PORT = 2020
+_DEFAULT_PORT = 18789
 _DEFAULT_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
 
 
@@ -37,8 +37,8 @@ def load_config(config_path: str | None = None) -> GatewayConfig:
 
     Env var overrides:
     - OPENCLAW_GATEWAY_HOST (default "127.0.0.1")
-    - OPENCLAW_GATEWAY_PORT (overrides config file)
-    - OPENCLAW_WEBHOOK_TOKEN (overrides config file)
+    - OPENCLAW_GATEWAY_PORT / CLAWDBOT_GATEWAY_PORT (overrides config file)
+    - OPENCLAW_GATEWAY_TOKEN / OPENCLAW_WEBHOOK_TOKEN (overrides config file)
 
     Returns GatewayConfig. Never raises — uses defaults if config missing.
     """
@@ -64,14 +64,14 @@ def load_config(config_path: str | None = None) -> GatewayConfig:
     # Env var overrides
     host = os.environ.get("OPENCLAW_GATEWAY_HOST", _DEFAULT_HOST)
 
-    env_port = os.environ.get("OPENCLAW_GATEWAY_PORT")
+    env_port = os.environ.get("OPENCLAW_GATEWAY_PORT") or os.environ.get("CLAWDBOT_GATEWAY_PORT")
     if env_port is not None:
         try:
             port = int(env_port)
         except ValueError:
             logger.warning("Invalid OPENCLAW_GATEWAY_PORT value %r — using %d", env_port, port)
 
-    env_token = os.environ.get("OPENCLAW_WEBHOOK_TOKEN")
+    env_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN") or os.environ.get("OPENCLAW_WEBHOOK_TOKEN")
     if env_token is not None:
         token = env_token
 

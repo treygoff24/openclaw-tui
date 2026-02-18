@@ -20,7 +20,13 @@ class TestGatewayConfig:
         assert cfg.base_url == "http://localhost:18789"
 
 
-_ENV_VARS = ("OPENCLAW_GATEWAY_HOST", "OPENCLAW_GATEWAY_PORT", "OPENCLAW_WEBHOOK_TOKEN")
+_ENV_VARS = (
+    "OPENCLAW_GATEWAY_HOST",
+    "OPENCLAW_GATEWAY_PORT",
+    "CLAWDBOT_GATEWAY_PORT",
+    "OPENCLAW_GATEWAY_TOKEN",
+    "OPENCLAW_WEBHOOK_TOKEN",
+)
 
 
 def clear_env(monkeypatch) -> None:
@@ -70,7 +76,7 @@ class TestLoadConfig:
         cfg = load_config(config_path=missing_path)
 
         assert cfg.host == "127.0.0.1"
-        assert cfg.port == 2020
+        assert cfg.port == 18789
         assert cfg.token is None
 
     def test_default_host_is_loopback(self, tmp_path, monkeypatch):
@@ -123,7 +129,7 @@ class TestLoadConfig:
         cfg = load_config(config_path=str(config_file))
 
         assert cfg.host == "127.0.0.1"
-        assert cfg.port == 2020
+        assert cfg.port == 18789
 
     def test_env_overrides_apply_even_with_missing_file(self, tmp_path, monkeypatch):
         clear_env(monkeypatch)

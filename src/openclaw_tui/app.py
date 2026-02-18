@@ -118,6 +118,8 @@ Footer {
         self._config = load_config()
         self._client = GatewayClient(self._config)
         self._ws_client: GatewayWsClient | None = None
+        self._ws_connect_lock = asyncio.Lock()
+        self._ws_connect_error: str | None = None
         self._chat_events: ChatEventProcessor | None = None
         self._run_tracking: RunTrackingState | None = None
         self._chat_commands = ChatCommandHandlers(
@@ -166,30 +168,49 @@ Footer {
         return self._chat_state.active_run_id
 
     async def chat_abort(self, session_key: str, run_id: str | None = None) -> dict:
-        if self._ws_client is None:
-            raise RuntimeError("chat transport unavailable")
-        return await self._ws_client.chat_abort(session_key, run_id=run_id)
+        ws_client = await self._ensure_ws_client()
+        return await ws_client.chat_abort(session_key, run_id=run_id)
 
     async def _connect_ws_gateway(self) -> None:
         """Connect to gateway WebSocket for chat parity transport."""
-        ws_client = GatewayWsClient(
-            url=self._config.ws_url,
-            token=self._config.token,
-            client_display_name="openclaw-tui",
-            client_version="0.1.0",
-            platform="python",
-        )
-        ws_client.on_event = self._on_gateway_event
-        ws_client.on_disconnected = self._on_gateway_disconnected
-        ws_client.on_gap = self._on_gateway_gap
-        try:
-            await ws_client.start()
-            await ws_client.wait_ready()
-            self._ws_client = ws_client
-            logger.info("Chat WebSocket connected: %s", self._config.ws_url)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Chat WebSocket failed: %s", exc)
-            self._show_poll_error(f"Chat websocket unavailable: {exc}")
+        async with self._ws_connect_lock:
+            if self._ws_client is not None:
+                return
+            ws_client = GatewayWsClient(
+                url=self._config.ws_url,
+                token=self._config.token,
+                client_display_name="openclaw-tui",
+                client_version="0.1.0",
+                platform="python",
+            )
+            ws_client.on_event = self._on_gateway_event
+            ws_client.on_disconnected = self._on_gateway_disconnected
+            ws_client.on_gap = self._on_gateway_gap
+            try:
+                await ws_client.start()
+                await ws_client.wait_ready()
+                self._ws_client = ws_client
+                self._ws_connect_error = None
+                logger.info("Chat WebSocket connected: %s", self._config.ws_url)
+            except Exception as exc:  # noqa: BLE001
+                self._ws_connect_error = str(exc)
+                try:
+                    await ws_client.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.warning("Chat WebSocket failed: %s", exc)
+                self._show_poll_error(f"Chat websocket unavailable: {exc}")
+
+    async def _ensure_ws_client(self) -> GatewayWsClient:
+        ws_client = self._ws_client
+        if ws_client is not None:
+            return ws_client
+        await self._connect_ws_gateway()
+        ws_client = self._ws_client
+        if ws_client is not None:
+            return ws_client
+        detail = f": {self._ws_connect_error}" if self._ws_connect_error else ""
+        raise RuntimeError(f"chat websocket unavailable{detail}")
 
     def _on_gateway_event(self, evt: dict) -> None:
         if self._chat_mode is False or self._chat_events is None:
@@ -520,9 +541,8 @@ Footer {
         chat_panel.set_status("● loading history...")
 
         try:
-            if self._ws_client is None:
-                raise RuntimeError("Chat websocket unavailable")
-            history = await self._ws_client.chat_history(session_key, limit=limit)
+            ws_client = await self._ensure_ws_client()
+            history = await ws_client.chat_history(session_key, limit=limit)
         except Exception as exc:  # noqa: BLE001
             if self._chat_state is None or self._chat_state.session_key != session_key:
                 return
@@ -641,7 +661,7 @@ Footer {
     async def _run_known_chat_command(self, name: str, args: str) -> CommandResult:
         if self._chat_state is None:
             return CommandResult(ok=False, message="No active chat session")
-        ws_client = self._ws_client
+        ws_client: GatewayWsClient | None = None
         if name == "help":
             self._append_system_message(format_help())
             return CommandResult(ok=True)
@@ -689,9 +709,7 @@ Footer {
             self.exit()
             return CommandResult(ok=True)
 
-        if ws_client is None:
-            self._append_system_message("gateway websocket unavailable")
-            return CommandResult(ok=False)
+        ws_client = await self._ensure_ws_client()
 
         if name in {"new", "reset"}:
             await ws_client.sessions_reset(self._chat_state.session_key)
@@ -890,10 +908,9 @@ Footer {
     async def _abort_chat_session(self, session_key: str) -> None:
         """Call gateway abort and report result in chat panel."""
         try:
-            if self._ws_client is None:
-                raise RuntimeError("chat websocket unavailable")
+            ws_client = await self._ensure_ws_client()
             run_id = self._chat_state.active_run_id if self._chat_state is not None else None
-            await self._ws_client.chat_abort(session_key, run_id=run_id)
+            await ws_client.chat_abort(session_key, run_id=run_id)
         except Exception as exc:  # noqa: BLE001
             self._append_system_message(f"Abort failed: {exc}")
             self.query_one(ChatPanel).set_status(self._format_error_status(str(exc)))
@@ -910,8 +927,7 @@ Footer {
     async def _send_chat_message(self, session_key: str, message: str) -> None:
         """Send a user message to gateway via websocket transport."""
         try:
-            if self._ws_client is None:
-                raise RuntimeError("chat websocket unavailable")
+            ws_client = await self._ensure_ws_client()
             run_id = str(uuid4())
             if self._chat_state is not None:
                 self._chat_state.active_run_id = run_id
@@ -919,7 +935,7 @@ Footer {
             if self._run_tracking is not None:
                 self._run_tracking.active_run_id = run_id
                 self._run_tracking.note_local_run(run_id)
-            await self._ws_client.send_chat(
+            await ws_client.send_chat(
                 session_key=session_key,
                 message=message,
                 thinking=self._chat_state.thinking_level if self._chat_state is not None else None,
