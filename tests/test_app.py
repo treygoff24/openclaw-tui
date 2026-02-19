@@ -136,6 +136,11 @@ async def test_poll_uses_tree_stats_without_summary_flicker() -> None:
         bar.update_summary = MagicMock()
         bar.update_with_tree_stats = MagicMock()
 
+        # Isolate this assertion from the mount-triggered background poll.
+        await pilot.pause()
+        bar.update_summary.reset_mock()
+        bar.update_with_tree_stats.reset_mock()
+
         app._client.fetch_sessions.return_value = []
         app._client.fetch_tree.return_value = [
             TreeNodeData(
