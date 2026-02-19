@@ -142,6 +142,25 @@ async def test_select_tree_node_opens_chat_mode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_mode_right_pane_stays_height_aligned_when_short() -> None:
+    """In chat mode, the right pane remains height-aligned with the tree in short terminals."""
+    app = AgentDashboard()
+
+    async with app.run_test() as pilot:
+        app._client.fetch_history.return_value = []
+        session = _make_session()
+        app._enter_chat_mode_for_session(session)
+        await pilot.pause()
+
+        await pilot.resize_terminal(80, 14)
+        await pilot.pause()
+
+        tree = app.query_one(AgentTreeWidget)
+        right_panel = app.query_one("#right-panel")
+        assert tree.region.height == right_panel.region.height
+
+
+@pytest.mark.asyncio
 async def test_escape_in_chat_mode_empty_input_returns_to_transcript() -> None:
     """Pressing Escape in chat mode with empty input returns to transcript mode."""
     app = AgentDashboard()
