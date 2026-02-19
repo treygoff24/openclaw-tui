@@ -8,7 +8,7 @@ from textual.widgets import Header, Footer
 
 from openclaw_tui.app import AgentDashboard
 from openclaw_tui.models import SessionInfo, TreeNodeData
-from openclaw_tui.widgets import AgentTreeWidget, SummaryBar
+from openclaw_tui.widgets import AgentTreeWidget, SummaryBar, LogPanel
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +94,19 @@ async def test_app_composes_summary_bar() -> None:
     app = AgentDashboard()
     async with app.run_test() as pilot:
         assert app.query_one(SummaryBar) is not None
+
+
+@pytest.mark.asyncio
+async def test_agent_and_log_panels_share_height_even_when_short() -> None:
+    """AgentTreeWidget and LogPanel stay aligned when terminal height is constrained."""
+    app = AgentDashboard()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.resize_terminal(80, 14)
+        await pilot.pause()
+        tree = app.query_one(AgentTreeWidget)
+        log = app.query_one(LogPanel)
+        assert tree.region.height == log.region.height
 
 
 @pytest.mark.asyncio
