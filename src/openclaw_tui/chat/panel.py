@@ -1,7 +1,9 @@
 """ChatPanel widget — interactive chat interface for selected sessions."""
 from __future__ import annotations
 
+from rich.console import RenderableType
 from rich.markup import escape as escape_markup
+from rich.markdown import Markdown
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import Static, RichLog, Input
@@ -69,6 +71,11 @@ class ChatPanel(Vertical):
     def _safe_markup_text(value: object) -> str:
         """Escape dynamic text before interpolating it into Rich markup."""
         return escape_markup(str(value))
+
+    @staticmethod
+    def _render_markdown(value: object) -> Markdown:
+        """Render message content with Markdown formatting."""
+        return Markdown(str(value), hyperlinks=True)
 
     def compose(self) -> ComposeResult:
         """Compose the chat panel with header, log, status, and input."""
@@ -160,7 +167,7 @@ class ChatPanel(Vertical):
         safe_text = self._safe_markup_text(text)
         status.update(f"[#A8B5A2]{safe_text}[/]")
 
-    def _write_block(self, lines: list[str]) -> None:
+    def _write_block(self, lines: list[RenderableType]) -> None:
         """Write a formatted block with one blank spacer line."""
         rich_log = self.query_one("#chat-log")
         for line in lines:
@@ -173,29 +180,31 @@ class ChatPanel(Vertical):
         Role blocks use subtle framing and spacing for readability.
         """
         safe_timestamp = self._safe_markup_text(msg.timestamp)
-        safe_content = self._safe_markup_text(msg.content)
         if msg.role == "user":
             self._write_block([
                 f"[#F5A623]┌─[/] [bold #F5A623]you[/] [dim #7B7F87]{safe_timestamp}[/]",
-                f"[#F5A623]└─[/] {safe_content}",
+                self._render_markdown(msg.content),
             ])
         elif msg.role == "assistant":
             self._write_block([
                 f"[#A8B5A2]┌─[/] [bold #A8B5A2]assistant[/] [dim #7B7F87]{safe_timestamp}[/]",
-                f"[#A8B5A2]└─[/] {safe_content}",
+                self._render_markdown(msg.content),
             ])
         elif msg.role == "system":
+            safe_content = self._safe_markup_text(msg.content)
             self._write_block([
                 f"[dim #7B7F87]├─ SYSTEM {safe_timestamp}[/]",
                 f"[dim #A8B5A2]{safe_content}[/]",
             ])
         elif msg.role == "tool":
+            safe_content = self._safe_markup_text(msg.content)
             safe_tool_name = self._safe_markup_text(msg.tool_name or "tool")
             self._write_block([
                 f"[dim #7B7F87]╭─ ⚙ {safe_tool_name} {safe_timestamp}[/]",
                 f"[dim #A8B5A2]╰─ {safe_content}[/]",
             ])
         else:
+            safe_content = self._safe_markup_text(msg.content)
             safe_role = self._safe_markup_text(msg.role)
             self._write_block([
                 f"[dim #7B7F87]├─ {safe_role} {safe_timestamp}[/]",

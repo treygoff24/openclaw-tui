@@ -4,6 +4,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from rich.markdown import Markdown
 from textual.app import App, ComposeResult
 
 from openclaw_tui.chat.panel import ChatPanel
@@ -31,7 +32,24 @@ def _capture_writes(panel: ChatPanel, fn) -> list[str]:
     written: list[str] = []
 
     def _fake_write(content, **kwargs):
+        if isinstance(content, Markdown):
+            written.append(content.markup)
+            return
         written.append(str(content))
+
+    with patch.object(rich_log, "write", side_effect=_fake_write):
+        fn()
+
+    return written
+
+
+def _capture_write_objects(panel: ChatPanel, fn) -> list[object]:
+    """Call fn() while intercepting RichLog.write() and preserving raw objects."""
+    rich_log = panel.query_one("#chat-log")
+    written: list[object] = []
+
+    def _fake_write(content, **kwargs):
+        written.append(content)
 
     with patch.object(rich_log, "write", side_effect=_fake_write):
         fn()
@@ -191,6 +209,43 @@ async def test_chat_panel_append_message_tool_escapes_markup_like_content() -> N
 
         assert "\\[/concepts/session-pruning]" in combined, f"Expected escaped closing tag in: {written}"
         assert "exec\\[/bad]" in combined, f"Expected escaped tool name in: {written}"
+
+
+@pytest.mark.asyncio
+async def test_chat_panel_append_message_assistant_renders_markdown_body() -> None:
+    """Assistant body should be written as a Markdown renderable."""
+    app = ChatPanelTestApp()
+    async with app.run_test() as pilot:
+        panel = app.query_one(ChatPanel)
+        content = "**Bold** with `code` and [docs](https://example.com)"
+        msg = ChatMessage(role="assistant", content=content, timestamp="10:04")
+
+        written = _capture_write_objects(panel, lambda: panel.append_message(msg))
+        markdown_nodes = [entry for entry in written if isinstance(entry, Markdown)]
+
+        assert len(markdown_nodes) == 1, f"Expected one Markdown renderable in: {written}"
+        assert markdown_nodes[0].markup == content
+
+
+@pytest.mark.asyncio
+async def test_chat_panel_append_message_tool_keeps_plain_text_body() -> None:
+    """Tool body should remain escaped text, not markdown-rendered."""
+    app = ChatPanelTestApp()
+    async with app.run_test() as pilot:
+        panel = app.query_one(ChatPanel)
+        msg = ChatMessage(
+            role="tool",
+            content="literal [/concepts/session-pruning]",
+            timestamp="10:05",
+            tool_name="exec",
+        )
+
+        written = _capture_write_objects(panel, lambda: panel.append_message(msg))
+        markdown_nodes = [entry for entry in written if isinstance(entry, Markdown)]
+        combined = " ".join(str(entry) for entry in written)
+
+        assert not markdown_nodes, f"Did not expect Markdown renderable for tool output: {written}"
+        assert "\\[/concepts/session-pruning]" in combined
 
 
 @pytest.mark.asyncio
