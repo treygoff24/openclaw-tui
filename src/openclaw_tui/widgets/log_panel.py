@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from rich.markup import escape as escape_markup
 from textual.widgets import RichLog
 
 from openclaw_tui.utils.time import relative_time
@@ -29,6 +30,11 @@ class LogPanel(RichLog):
         kwargs.setdefault("markup", True)
         super().__init__(*args, **kwargs)
 
+    @staticmethod
+    def _safe_markup_text(value: object) -> str:
+        """Escape dynamic text before interpolating it into Rich markup."""
+        return escape_markup(str(value))
+
     def on_mount(self) -> None:
         """Show placeholder text when widget is first mounted."""
         self.show_placeholder()
@@ -53,6 +59,9 @@ class LogPanel(RichLog):
             rel = relative_time(session_info.updated_at, now_ms)
             agent_id = session_info.agent_id
             model = session_info.short_model
+            safe_agent_id = self._safe_markup_text(agent_id)
+            safe_model = self._safe_markup_text(model)
+            safe_rel = self._safe_markup_text(rel)
             tokens = getattr(session_info, "total_tokens", None)
             token_chunk = (
                 f"  [dim #7B7F87]•[/] [bold #C67B5C]{tokens:,} tokens[/]"
@@ -60,9 +69,9 @@ class LogPanel(RichLog):
                 else ""
             )
             self.write(
-                f"[bold #F5A623]agent:[/] {agent_id}  [dim #7B7F87]•[/] "
-                f"[bold #F5A623]model:[/] {model}{token_chunk}  [dim #7B7F87]•[/] "
-                f"[bold #F5A623]last:[/] {rel}"
+                f"[bold #F5A623]agent:[/] {safe_agent_id}  [dim #7B7F87]•[/] "
+                f"[bold #F5A623]model:[/] {safe_model}{token_chunk}  [dim #7B7F87]•[/] "
+                f"[bold #F5A623]last:[/] {safe_rel}"
             )
             self.write("[#7B7F87 dim]" + "─" * 52 + "[/]")
             self.write("")
@@ -72,21 +81,24 @@ class LogPanel(RichLog):
             return
 
         for msg in messages:
+            safe_timestamp = self._safe_markup_text(msg.timestamp)
+            safe_content = self._safe_markup_text(msg.content)
             if msg.role == "user":
                 self.write(
-                    f"[#F5A623][{msg.timestamp}][/] [#F5A623]┌─[/] "
-                    f"[bold cyan]◉ user:[/bold cyan] {msg.content}"
+                    f"[#F5A623][{safe_timestamp}][/] [#F5A623]┌─[/] "
+                    f"[bold cyan]◉ user:[/bold cyan] {safe_content}"
                 )
                 self.write("[#F5A623]└─[/]")
             elif msg.role == "assistant":
                 self.write(
-                    f"[#F5A623][{msg.timestamp}][/] [#A8B5A2]┌─[/] "
-                    f"[bold green]◆ asst:[/bold green] {msg.content}"
+                    f"[#F5A623][{safe_timestamp}][/] [#A8B5A2]┌─[/] "
+                    f"[bold green]◆ asst:[/bold green] {safe_content}"
                 )
                 self.write("[#A8B5A2]└─[/]")
             else:
-                self.write(f"[#A8B5A2 dim][{msg.timestamp}] [dim]╭─ · {msg.role}[/]")
-                self.write(f"[#A8B5A2 dim]╰─ {msg.content}[/]")
+                safe_role = self._safe_markup_text(msg.role)
+                self.write(f"[#A8B5A2 dim][{safe_timestamp}] [dim]╭─ · {safe_role}[/]")
+                self.write(f"[#A8B5A2 dim]╰─ {safe_content}[/]")
             self.write("")
 
     def show_placeholder(self) -> None:
@@ -97,4 +109,5 @@ class LogPanel(RichLog):
     def show_error(self, message: str) -> None:
         """Show error message."""
         self.clear()
-        self.write(f"[bold #C67B5C]⚠ Error:[/bold #C67B5C] {message}")
+        safe_message = self._safe_markup_text(message)
+        self.write(f"[bold #C67B5C]⚠ Error:[/bold #C67B5C] {safe_message}")

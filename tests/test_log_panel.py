@@ -156,3 +156,17 @@ async def test_log_panel_tool_messages_have_dim_styling() -> None:
 
         assert "dim" in combined, f"[dim] markup missing: {written}"
         assert "[tool: bash]" in combined, f"Tool content missing: {written}"
+
+
+@pytest.mark.asyncio
+async def test_log_panel_escapes_markup_like_message_content() -> None:
+    """Transcript content with Rich-like closing tags should be escaped."""
+    app = LogPanelTestApp()
+    async with app.run_test() as pilot:
+        panel = app.query_one(LogPanel)
+
+        msgs = [FakeMessage("tool", "from docs [/concepts/session-pruning]", "10:00")]
+        written = _capture_writes(panel, lambda: panel.show_transcript(msgs))
+        combined = " ".join(written)
+
+        assert "\\[/concepts/session-pruning]" in combined, f"Expected escaped closing tag in: {written}"

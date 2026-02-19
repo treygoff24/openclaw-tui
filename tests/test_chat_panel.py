@@ -174,6 +174,26 @@ async def test_chat_panel_append_message_tool_formats_correctly() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_panel_append_message_tool_escapes_markup_like_content() -> None:
+    """Tool content with Rich-like tags should be escaped before writing."""
+    app = ChatPanelTestApp()
+    async with app.run_test() as pilot:
+        panel = app.query_one(ChatPanel)
+        msg = ChatMessage(
+            role="tool",
+            content="doc ref [/concepts/session-pruning] should not crash",
+            timestamp="10:03",
+            tool_name="exec[/bad]",
+        )
+
+        written = _capture_writes(panel, lambda: panel.append_message(msg))
+        combined = " ".join(written)
+
+        assert "\\[/concepts/session-pruning]" in combined, f"Expected escaped closing tag in: {written}"
+        assert "exec\\[/bad]" in combined, f"Expected escaped tool name in: {written}"
+
+
+@pytest.mark.asyncio
 async def test_chat_panel_show_messages_clears_and_renders() -> None:
     """show_messages() should clear log and render multiple messages."""
     app = ChatPanelTestApp()
