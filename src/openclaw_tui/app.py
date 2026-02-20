@@ -102,8 +102,6 @@ Header {
 #right-panel {
     width: 3fr;
     border-left: solid #2A2E3D;
-    border-top: blank;
-    border-bottom: blank;
     background: #16213E;
     padding: 0 0 0 1;
 }
