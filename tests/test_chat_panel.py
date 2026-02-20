@@ -146,8 +146,8 @@ async def test_chat_panel_append_message_user_formats_correctly() -> None:
 
 
 @pytest.mark.asyncio
-async def test_chat_panel_append_message_assistant_formats_correctly() -> None:
-    """append_message() for assistant role should format with green 'assistant'."""
+async def test_chat_panel_append_message_assistant_formats_as_ren() -> None:
+    """append_message() for assistant role should display as 'Ren' not 'assistant'."""
     app = ChatPanelTestApp()
     async with app.run_test() as pilot:
         panel = app.query_one(ChatPanel)
@@ -156,7 +156,7 @@ async def test_chat_panel_append_message_assistant_formats_correctly() -> None:
         written = _capture_writes(panel, lambda: panel.append_message(msg))
         combined = " ".join(written)
 
-        assert "assistant" in combined.lower() or "[green]" in combined, f"Expected 'assistant' or '[green]' in: {written}"
+        assert "Ren" in combined, f"Expected 'Ren' in role label, got: {written}"
         assert "Hi there" in combined, f"Expected content 'Hi there' in: {written}"
 
 

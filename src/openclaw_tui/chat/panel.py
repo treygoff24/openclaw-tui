@@ -112,8 +112,8 @@ class ChatPanel(Vertical):
         if len(parts) >= 3:
             session_name, agent_id, model = parts[:3]
             selected_session = getattr(self.app, "_selected_session", None)
-            total_tokens = getattr(selected_session, "total_tokens", None)
-            token_label = f"{total_tokens:,} tokens" if isinstance(total_tokens, int) else session_name
+            context_tokens = getattr(selected_session, "context_tokens", None)
+            token_label = f"{context_tokens:,} tokens" if isinstance(context_tokens, int) else session_name
             safe_agent_id = self._safe_markup_text(agent_id)
             safe_model = self._safe_markup_text(model)
             safe_token_label = self._safe_markup_text(token_label)
@@ -186,7 +186,7 @@ class ChatPanel(Vertical):
             ])
         elif msg.role == "assistant":
             self._write_block([
-                f"[#A8B5A2]┌─[/] [bold #A8B5A2]assistant[/] [dim #7B7F87]{safe_timestamp}[/]",
+                f"[#A8B5A2]┌─[/] [bold #A8B5A2]Ren[/] [dim #7B7F87]{safe_timestamp}[/]",
                 self._render_markdown(msg.content),
             ])
         elif msg.role == "system":

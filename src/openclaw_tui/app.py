@@ -467,6 +467,16 @@ Footer {
                 tree.update_tree(nodes, now_ms)
                 bar.update_summary(nodes, now_ms)
             logger.info("Poll OK — %d sessions across %d agents", len(sessions), len(nodes))
+            # Update selected session reference if in chat mode, so header stays fresh
+            if self._chat_mode and self._selected_session is not None:
+                updated = session_lookup.get(self._selected_session.key)
+                if updated is not None:
+                    self._selected_session = updated
+                    self._chat_state.session_info = updated
+                    session = updated
+                    self.query_one(ChatPanel).set_header(
+                        f"{session.label or session.display_name} · {session.agent_id} · {session.short_model}"
+                    )
         except (GatewayError, ConnectionError) as exc:
             logger.warning("Gateway poll failed: %s", exc)
             self._show_poll_error(str(exc) or "Gateway unreachable")
@@ -865,6 +875,8 @@ Footer {
         state.last_message_count = len(state.messages)
         state.active_run_id = None
         self.query_one(ChatPanel).show_messages(state.messages)
+        # Refresh session to get updated context_tokens after assistant turn
+        self._trigger_poll()
 
     def _reset_chat_runtime_for_session(self, session_key: str) -> None:
         self._run_tracking = RunTrackingState(session_key=session_key)
@@ -1097,8 +1109,18 @@ Footer {
             return CommandResult(ok=True)
 
         if name == "model" and args:
-            await ws_client.sessions_patch(key=self._chat_state.session_key, model=args.strip())
-            self._append_system_message(f"model set to {args.strip()}")
+            new_model = args.strip()
+            await ws_client.sessions_patch(key=self._chat_state.session_key, model=new_model)
+            # Update session model locally so header reflects the change
+            self._chat_state.session_info.model = new_model
+            if self._selected_session is not None:
+                self._selected_session.model = new_model
+            # Refresh header to show new model
+            session = self._chat_state.session_info
+            self.query_one(ChatPanel).set_header(
+                f"{session.label or session.display_name} · {session.agent_id} · {session.short_model}"
+            )
+            self._append_system_message(f"model set to {new_model}")
             return CommandResult(ok=True)
 
         if name in {"agents", "agent"} and not args:
@@ -1343,6 +1365,8 @@ Footer {
 
         self._chat_state.error = None
         self.query_one(ChatPanel).set_status("● waiting for response...")
+        # Refresh session to get updated context_tokens after user turn
+        self._trigger_poll()
 
     @staticmethod
     def _normalize_image_token_path(token: str) -> Path | None:
