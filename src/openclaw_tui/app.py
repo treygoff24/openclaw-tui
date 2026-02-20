@@ -253,10 +253,91 @@ Footer {
             self._chat_events.handle_agent_event(payload, verbose_level=verbose)
 
     def _on_gateway_disconnected(self, reason: str) -> None:
-        if not self._chat_mode:
-            return
-        panel = self.query_one(ChatPanel)
-        panel.set_status(f"● error: gateway disconnected: {reason}")
+        try:
+            bar = self.query_one(SummaryBar)
+            bar.set_error("Gateway offline. Reconnecting...")
+        except Exception:  # noqa: BLE001
+            pass
+
+        if self._chat_mode:
+            try:
+                panel = self.query_one(ChatPanel)
+                panel.set_status(f"● reconnecting...")
+            except Exception:  # noqa: BLE001
+                pass
+
+        self.workers.cancel_group(self, "chat_gateway_connect")
+        self.workers.cancel_group(self, "chat_gateway_reconnect")
+        self.run_worker(self._reconnect_ws_gateway, exclusive=True, group="chat_gateway_reconnect")
+
+    async def _reconnect_ws_gateway(self) -> None:
+        """Background worker to exponentially backoff and reconnect to the gateway."""
+        delay = 1.0
+        max_delay = 10.0
+
+        async with self._ws_connect_lock:
+            old_client = self._ws_client
+            self._ws_client = None
+            if old_client is not None:
+                try:
+                    await old_client.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        while self._ws_client is None:
+            if self._chat_mode:
+                try:
+                    self.query_one(ChatPanel).set_status(f"● reconnecting in {delay:.1f}s...")
+                except Exception:  # noqa: BLE001
+                    pass
+
+            await asyncio.sleep(delay)
+
+            if self._chat_mode:
+                try:
+                    self.query_one(ChatPanel).set_status("● reconnecting...")
+                except Exception:  # noqa: BLE001
+                    pass
+
+            await self._connect_ws_gateway()
+
+            if self._ws_client is not None:
+                # Successfully reconnected
+                if self._chat_mode:
+                    try:
+                        self.query_one(ChatPanel).set_status("● connected")
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                self._trigger_poll()
+
+                if self._chat_state is not None:
+                    self.run_worker(
+                        partial(self._load_chat_history, self._chat_state.session_key, 200),
+                        exclusive=True,
+                        group="chat_history",
+                    )
+
+                if hasattr(self, "_offline_message_queue") and self._offline_message_queue:
+                    queue = self._offline_message_queue
+                    self._offline_message_queue = []
+                    for queued in queue:
+                        # queued = (session_key, message, attachments, run_id, thinking)
+                        try:
+                            await self._ws_client.send_chat(
+                                session_key=queued[0],
+                                message=queued[1],
+                                attachments=queued[2],
+                                run_id=queued[3],
+                                thinking=queued[4],
+                                deliver=False,
+                                timeout_ms=30_000,
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to send queued message: {e}")
+                break
+
+            delay = min(delay * 1.5, max_delay)
 
     def _on_gateway_gap(self, info: dict[str, int]) -> None:
         if not self._chat_mode or self._chat_state is None:
@@ -1148,16 +1229,18 @@ Footer {
 
     async def _send_chat_message(self, session_key: str, message: str) -> None:
         """Send a user message to gateway via websocket transport."""
+        run_id = str(uuid4())
+        outbound_message, attachments = self._extract_inline_image_attachments(message)
+
+        if self._chat_state is not None:
+            self._chat_state.active_run_id = run_id
+            self._chat_state.local_run_ids.add(run_id)
+        if self._run_tracking is not None:
+            self._run_tracking.active_run_id = run_id
+            self._run_tracking.note_local_run(run_id)
+
         try:
             ws_client = await self._ensure_ws_client()
-            run_id = str(uuid4())
-            outbound_message, attachments = self._extract_inline_image_attachments(message)
-            if self._chat_state is not None:
-                self._chat_state.active_run_id = run_id
-                self._chat_state.local_run_ids.add(run_id)
-            if self._run_tracking is not None:
-                self._run_tracking.active_run_id = run_id
-                self._run_tracking.note_local_run(run_id)
             await ws_client.send_chat(
                 session_key=session_key,
                 message=outbound_message,
@@ -1167,13 +1250,19 @@ Footer {
                 run_id=run_id,
                 attachments=attachments,
             )
-        except ConnectionError as exc:
-            logger.warning("send_message connection lost for %s: %s", session_key, exc)
+        except (ConnectionError, RuntimeError) as exc:
+            logger.warning("send_message connection lost/offline for %s: %s", session_key, exc)
+            if not hasattr(self, "_offline_message_queue"):
+                self._offline_message_queue = []
+
+            thinking = self._chat_state.thinking_level if self._chat_state is not None else None
+            self._offline_message_queue.append(
+                (session_key, outbound_message, attachments, run_id, thinking)
+            )
+
+            self._append_system_message("Gateway offline. Message queued for reconnect.")
             if self._chat_state is not None and self._chat_state.session_key == session_key:
-                self._chat_state.is_busy = False
-                self._chat_state.error = "Connection lost"
-                self._append_system_message(f"Send failed: {exc}")
-                self.query_one(ChatPanel).set_status("⚠ Connection lost")
+                self.query_one(ChatPanel).set_status("● queued (offline)")
             return
         except Exception as exc:  # noqa: BLE001
             logger.warning("send_message failed for %s: %s", session_key, exc)
