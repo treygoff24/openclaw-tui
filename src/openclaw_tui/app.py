@@ -8,6 +8,7 @@ from functools import partial
 import inspect
 import logging
 import mimetypes
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -41,6 +42,16 @@ from .widgets import AgentTreeWidget, ChatPanel, LogPanel, NewSessionModal, Summ
 from . import transcript
 
 logger = logging.getLogger(__name__)
+
+# Enable debug file logging with OPENCLAW_DEBUG=1 or OPENCLAW_DEBUG=/path/to/file.log
+_debug_path = os.environ.get("OPENCLAW_DEBUG", "")
+if _debug_path:
+    _log_file = _debug_path if _debug_path not in ("1", "true") else "/tmp/openclaw-tui-debug.log"
+    _fh = logging.FileHandler(_log_file, mode="a")
+    _fh.setLevel(logging.DEBUG)
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    logging.getLogger("openclaw_tui").setLevel(logging.DEBUG)
+    logging.getLogger("openclaw_tui").addHandler(_fh)
 
 _IMAGE_TOKEN_PATTERN = re.compile(r"(?P<path>(?:~|/)\S+)")
 _IMAGE_MIME_BY_SUFFIX = {
@@ -196,9 +207,12 @@ Footer {
 
     async def _connect_ws_gateway(self) -> None:
         """Connect to gateway WebSocket for chat parity transport."""
+        logger.debug("_connect_ws_gateway: acquiring lock, current _ws_client=%r", self._ws_client)
         async with self._ws_connect_lock:
             if self._ws_client is not None:
+                logger.debug("_connect_ws_gateway: already connected, returning")
                 return
+            logger.debug("_connect_ws_gateway: creating GatewayWsClient for %s", self._config.ws_url)
             ws_client = GatewayWsClient(
                 url=self._config.ws_url,
                 token=self._config.token,
@@ -210,7 +224,9 @@ Footer {
             ws_client.on_disconnected = self._on_gateway_disconnected
             ws_client.on_gap = self._on_gateway_gap
             try:
+                logger.debug("_connect_ws_gateway: calling ws_client.start()")
                 await ws_client.start()
+                logger.debug("_connect_ws_gateway: start() done, calling wait_ready()")
                 await ws_client.wait_ready()
                 self._ws_client = ws_client
                 self._ws_connect_error = None
@@ -225,6 +241,7 @@ Footer {
                 self._show_poll_error(f"Chat websocket unavailable: {exc}")
 
     async def _ensure_ws_client(self) -> GatewayWsClient:
+        logger.debug("_ensure_ws_client: _ws_client=%r", self._ws_client)
         ws_client = self._ws_client
         if ws_client is not None:
             return ws_client
@@ -254,40 +271,51 @@ Footer {
             self._chat_events.handle_agent_event(payload, verbose_level=verbose)
 
     def _on_gateway_disconnected(self, reason: str) -> None:
+        logger.debug("_on_gateway_disconnected called: reason=%r, chat_mode=%s, ws_client=%r",
+                      reason, self._chat_mode, self._ws_client)
         try:
             bar = self.query_one(SummaryBar)
             bar.set_error("Gateway offline. Reconnecting...")
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("_on_gateway_disconnected: failed to update SummaryBar")
 
         if self._chat_mode:
             try:
                 panel = self.query_one(ChatPanel)
                 panel.set_status("● reconnecting...")
             except Exception:  # noqa: BLE001
-                pass
+                logger.debug("_on_gateway_disconnected: failed to update ChatPanel status")
 
         self.workers.cancel_group(self, "chat_gateway_connect")
         self.workers.cancel_group(self, "chat_gateway_reconnect")
+        logger.debug("_on_gateway_disconnected: spawning _reconnect_ws_gateway worker")
         self.run_worker(self._reconnect_ws_gateway, exclusive=True, group="chat_gateway_reconnect")
 
     async def _reconnect_ws_gateway(self) -> None:
         """Background worker to exponentially backoff and reconnect to the gateway."""
+        logger.debug("_reconnect_ws_gateway: worker started")
         delay = 1.0
         max_delay = 10.0
 
         async with self._ws_connect_lock:
             old_client = self._ws_client
             self._ws_client = None
+            logger.debug("_reconnect_ws_gateway: cleared _ws_client, old_client=%r", old_client)
             if old_client is not None:
                 try:
                     await old_client.stop()
-                except Exception:  # noqa: BLE001
-                    pass
+                    logger.debug("_reconnect_ws_gateway: old_client.stop() completed")
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("_reconnect_ws_gateway: old_client.stop() failed: %s", exc)
 
+        attempt = 0
         while self._ws_client is None:
+            attempt += 1
             if not self.is_running:
+                logger.debug("_reconnect_ws_gateway: app not running, aborting")
                 return
+
+            logger.debug("_reconnect_ws_gateway: attempt %d, delay=%.1fs", attempt, delay)
 
             if self._chat_mode:
                 try:
@@ -298,6 +326,7 @@ Footer {
             await asyncio.sleep(delay)
 
             if not self.is_running:
+                logger.debug("_reconnect_ws_gateway: app not running after sleep, aborting")
                 return
 
             if self._chat_mode:
@@ -306,9 +335,13 @@ Footer {
                 except Exception:  # noqa: BLE001
                     pass
 
+            logger.debug("_reconnect_ws_gateway: calling _connect_ws_gateway()")
             await self._connect_ws_gateway()
+            logger.debug("_reconnect_ws_gateway: after _connect_ws_gateway(), _ws_client=%r, error=%r",
+                         self._ws_client, self._ws_connect_error)
 
             if self._ws_client is not None:
+                logger.debug("_reconnect_ws_gateway: reconnected successfully on attempt %d", attempt)
                 if self._chat_mode:
                     try:
                         self.query_one(ChatPanel).set_status("● connected")
@@ -327,6 +360,8 @@ Footer {
                 self._replay_offline_queue()
                 break
 
+            logger.debug("_reconnect_ws_gateway: attempt %d failed, next delay=%.1fs",
+                         attempt, min(delay * 1.5, max_delay))
             delay = min(delay * 1.5, max_delay)
 
     def _replay_offline_queue(self) -> None:

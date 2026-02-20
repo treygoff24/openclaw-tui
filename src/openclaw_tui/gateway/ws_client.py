@@ -385,6 +385,8 @@ class GatewayWsClient:
             reason = str(exc)
             logger.debug("gateway ws read loop ended: %s", exc)
         finally:
+            logger.debug("_read_loop finally: reason=%r, _closed=%s, on_disconnected=%r",
+                         reason, self._closed, self.on_disconnected is not None)
             self._ready.clear()
             self._connect_sent = False
             self._connect_nonce = None
@@ -394,7 +396,10 @@ class GatewayWsClient:
                 self._connect_failed.set()
             self._fail_pending(RuntimeError(f"gateway disconnected: {reason}"))
             if not self._closed and self.on_disconnected is not None:
+                logger.debug("_read_loop: calling on_disconnected(%r)", reason)
                 self.on_disconnected(reason)
+            else:
+                logger.debug("_read_loop: NOT calling on_disconnected (_closed=%s)", self._closed)
 
     def _handle_frame(self, raw: str) -> None:
         try:
