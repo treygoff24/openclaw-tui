@@ -103,7 +103,7 @@ Header {
     width: 3fr;
     border-left: solid #2A2E3D;
     background: #16213E;
-    padding: 0 0 0 1;
+    padding: 1 0 1 1;
 }
 AgentTreeWidget {
     width: 2fr;
