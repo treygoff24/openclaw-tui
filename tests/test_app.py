@@ -8,7 +8,7 @@ from textual.widgets import Header, Footer
 
 from openclaw_tui.app import AgentDashboard
 from openclaw_tui.models import SessionInfo, TreeNodeData
-from openclaw_tui.widgets import AgentTreeWidget, SummaryBar, LogPanel
+from openclaw_tui.widgets import AgentTreeWidget, SummaryBar
 
 
 # ---------------------------------------------------------------------------
@@ -105,8 +105,8 @@ async def test_agent_and_log_panels_share_height_even_when_short() -> None:
         await pilot.resize_terminal(80, 14)
         await pilot.pause()
         tree = app.query_one(AgentTreeWidget)
-        log = app.query_one(LogPanel)
-        assert tree.region.height == log.region.height
+        right_panel = app.query_one("#right-panel")
+        assert tree.region.height == right_panel.region.height
 
 
 @pytest.mark.asyncio
