@@ -29,11 +29,10 @@ class ChatPanel(Vertical):
     }
     #chat-header {
         height: 1;
-        background: #1A1A2E;
+        background: #16213E;
         color: #F5A623;
         text-style: bold;
         padding: 0 1;
-        border-bottom: solid #2A2E3D;
     }
     #chat-log {
         height: 1fr;

@@ -302,3 +302,52 @@ async def test_chat_panel_show_placeholder_shows_text() -> None:
         # Since RichLog.write() stores content, we check it has content
         # A simpler test: call the method without error and check no exception
         assert True  # If we get here, the method worked
+
+
+# ---------------------------------------------------------------------------
+# CSS regression tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_chat_header_has_no_border_bottom() -> None:
+    """#chat-header must NOT have a border-bottom.
+
+    Regression: border-bottom on a height:1 widget in Textual's box model
+    consumed the entire cell, leaving 0 content rows and rendering as a
+    blank colored bar (the 'weird bar' visual bug).
+    """
+    css = ChatPanel.DEFAULT_CSS
+    # Find the #chat-header block and assert no border-bottom property
+    import re
+    header_block_match = re.search(r"#chat-header\s*\{([^}]+)\}", css, re.DOTALL)
+    assert header_block_match, "Could not find #chat-header block in DEFAULT_CSS"
+    header_block = header_block_match.group(1)
+    assert "border-bottom" not in header_block, (
+        "Found 'border-bottom' in #chat-header CSS. "
+        "This causes a blank bar to appear at the top of the chat pane on focus. "
+        "Remove border-bottom from #chat-header to fix the visual bug."
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_header_background_matches_panel() -> None:
+    """#chat-header background must match the ChatPanel background (#16213E).
+
+    Regression: using #1A1A2E (darker) created a visible dark stripe at the
+    top of the chat pane, contrasting with the #16213E panel background.
+    """
+    css = ChatPanel.DEFAULT_CSS
+    import re
+    header_block_match = re.search(r"#chat-header\s*\{([^}]+)\}", css, re.DOTALL)
+    assert header_block_match, "Could not find #chat-header block in DEFAULT_CSS"
+    header_block = header_block_match.group(1)
+
+    # Extract background value
+    bg_match = re.search(r"background:\s*([^;]+);", header_block)
+    if bg_match:
+        bg_value = bg_match.group(1).strip().lower()
+        assert bg_value == "#16213e", (
+            f"#chat-header background is '{bg_value}', expected '#16213e'. "
+            "A different background creates a dark stripe at the top of the chat pane."
+        )
