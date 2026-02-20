@@ -154,6 +154,7 @@ Footer {
         self._selected_session: SessionInfo | None = None
         self._chat_mode: bool = False
         self._chat_state: ChatState | None = None
+        self._offline_message_queue: list[tuple[str, str, list[dict[str, str]], str, str | None]] = []
         self._last_ctrl_c_press_at: float | None = None
         self.register_theme(Theme(
             name="hearth",
@@ -262,7 +263,7 @@ Footer {
         if self._chat_mode:
             try:
                 panel = self.query_one(ChatPanel)
-                panel.set_status(f"● reconnecting...")
+                panel.set_status("● reconnecting...")
             except Exception:  # noqa: BLE001
                 pass
 
@@ -285,6 +286,9 @@ Footer {
                     pass
 
         while self._ws_client is None:
+            if not self.is_running:
+                return
+
             if self._chat_mode:
                 try:
                     self.query_one(ChatPanel).set_status(f"● reconnecting in {delay:.1f}s...")
@@ -292,6 +296,9 @@ Footer {
                     pass
 
             await asyncio.sleep(delay)
+
+            if not self.is_running:
+                return
 
             if self._chat_mode:
                 try:
@@ -302,7 +309,6 @@ Footer {
             await self._connect_ws_gateway()
 
             if self._ws_client is not None:
-                # Successfully reconnected
                 if self._chat_mode:
                     try:
                         self.query_one(ChatPanel).set_status("● connected")
@@ -318,26 +324,48 @@ Footer {
                         group="chat_history",
                     )
 
-                if hasattr(self, "_offline_message_queue") and self._offline_message_queue:
-                    queue = self._offline_message_queue
-                    self._offline_message_queue = []
-                    for queued in queue:
-                        # queued = (session_key, message, attachments, run_id, thinking)
-                        try:
-                            await self._ws_client.send_chat(
-                                session_key=queued[0],
-                                message=queued[1],
-                                attachments=queued[2],
-                                run_id=queued[3],
-                                thinking=queued[4],
-                                deliver=False,
-                                timeout_ms=30_000,
-                            )
-                        except Exception as e:
-                            logger.error(f"Failed to send queued message: {e}")
+                self._replay_offline_queue()
                 break
 
             delay = min(delay * 1.5, max_delay)
+
+    def _replay_offline_queue(self) -> None:
+        """Replay queued offline messages after reconnect.
+
+        Failed sends are re-queued so no messages are silently lost.
+        """
+        if not self._offline_message_queue or self._ws_client is None:
+            return
+        queue = self._offline_message_queue
+        self._offline_message_queue = []
+        self.run_worker(
+            partial(self._drain_offline_queue, queue),
+            exclusive=True,
+            group="chat_queue_replay",
+        )
+
+    async def _drain_offline_queue(
+        self,
+        queue: list[tuple[str, str, list[dict[str, str]], str, str | None]],
+    ) -> None:
+        """Send queued messages, re-queuing any that fail."""
+        for queued in queue:
+            if self._ws_client is None:
+                self._offline_message_queue.extend(queue[queue.index(queued):])
+                return
+            try:
+                await self._ws_client.send_chat(
+                    session_key=queued[0],
+                    message=queued[1],
+                    attachments=queued[2],
+                    run_id=queued[3],
+                    thinking=queued[4],
+                    deliver=False,
+                    timeout_ms=30_000,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Re-queuing failed offline message for session %s", queued[0])
+                self._offline_message_queue.append(queued)
 
     def _on_gateway_gap(self, info: dict[str, int]) -> None:
         if not self._chat_mode or self._chat_state is None:
@@ -544,6 +572,7 @@ Footer {
     def _exit_chat_mode(self) -> None:
         """Exit chat mode and return to transcript view."""
         self.workers.cancel_group(self, "chat_history")
+        self._offline_message_queue.clear()
 
         chat_panel = self.query_one(ChatPanel)
         chat_panel.display = False
@@ -1251,9 +1280,9 @@ Footer {
                 attachments=attachments,
             )
         except (ConnectionError, RuntimeError) as exc:
+            if isinstance(exc, RuntimeError) and "unavailable" not in str(exc) and "disconnected" not in str(exc) and "not connected" not in str(exc):
+                raise
             logger.warning("send_message connection lost/offline for %s: %s", session_key, exc)
-            if not hasattr(self, "_offline_message_queue"):
-                self._offline_message_queue = []
 
             thinking = self._chat_state.thinking_level if self._chat_state is not None else None
             self._offline_message_queue.append(
@@ -1262,6 +1291,7 @@ Footer {
 
             self._append_system_message("Gateway offline. Message queued for reconnect.")
             if self._chat_state is not None and self._chat_state.session_key == session_key:
+                self._chat_state.is_busy = False
                 self.query_one(ChatPanel).set_status("● queued (offline)")
             return
         except Exception as exc:  # noqa: BLE001
@@ -1631,6 +1661,8 @@ Footer {
 
     def on_unmount(self) -> None:
         """Clean up HTTP client on exit."""
+        self.workers.cancel_group(self, "chat_gateway_reconnect")
+        self.workers.cancel_group(self, "chat_queue_replay")
         ws_client = self._ws_client
         if ws_client is not None:
             stop_method = getattr(ws_client, "stop", None)
