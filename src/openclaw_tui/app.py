@@ -101,9 +101,11 @@ Header {
 }
 #right-panel {
     width: 3fr;
-    border: round #2A2E3D;
+    border-left: solid #2A2E3D;
+    border-top: blank;
+    border-bottom: blank;
     background: #16213E;
-    padding: 0 1;
+    padding: 0 0 0 1;
 }
 AgentTreeWidget {
     width: 2fr;
@@ -113,7 +115,6 @@ AgentTreeWidget {
 }
 LogPanel {
     background: #16213E;
-    border: none;
 }
 ChatPanel {
     background: #16213E;
